@@ -85,7 +85,7 @@ pub async fn add_label(
     conn: &Connection,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let sql = "
-            INSERT INTO labels (label, note_id) VALUES (?1, ?2)
+            INSERT OR IGNORE INTO labels (label, note_id) VALUES (?1, ?2)
         ";
 
     let new_label = conn.execute(sql, (label, note_id)).await?;
