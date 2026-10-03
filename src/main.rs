@@ -38,6 +38,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (),
     )
     .await?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS embeddings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL,
+                embedding F32_BLOB(384),
+                FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
+            )",
+        (),
+    )
+    .await?;
+
     let text = get_text_from_file("my_text.md").unwrap();
     add_note(text.to_string(), &conn).await?;
     // all_notes(&conn).await?;

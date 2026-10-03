@@ -33,7 +33,7 @@ pub async fn note_by_id(id: i32, conn: &Connection) -> Result<(), Box<dyn std::e
 
 pub async fn delete_note(id: i32, conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     // let text: String = "A random note to you =),  second one lol!".to_string();
-    let mut row_by_id = conn
+    let _ = conn
         .execute("DELETE FROM notes where id=(?1)", (id,))
         .await?;
 
