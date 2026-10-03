@@ -1,14 +1,11 @@
 mod db_methods;
-mod funny_fun;
 use std::io;
 use std::{
     error::Error,
     path::{self, Path},
 };
 
-use axum::routing::delete;
 use db_methods::{add_note, last_notes};
-use funny_fun::summm;
 use std::fs;
 use turso::Builder;
 
@@ -31,14 +28,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     conn.execute(
-        "
-            CREATE TABLE IF NOT EXISTS labels (
+        "CREATE TABLE IF NOT EXISTS labels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-           note_id INTEGER NOT NULL,
-          label TEXT NOT NULL UNIQUE,
-          FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE
-            )
-        ",
+            note_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE,
+            UNIQUE(note_id, label)
+        )",
         (),
     )
     .await?;
@@ -46,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_note(text.to_string(), &conn).await?;
     // all_notes(&conn).await?;
     last_notes(20, &conn).await?;
-    add_label("crazy!", 4, &conn).await?;
+    add_label("crazy!!!!!", 4, &conn).await?;
     // delete_note(5, &conn).await?;
     // all_notes(&conn).await?;
     Ok(())
