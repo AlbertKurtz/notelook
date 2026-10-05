@@ -1,12 +1,38 @@
 use iced::widget::{button, column, row, space, text, text_editor};
-use iced::{Element, Fill, Length, Padding, Size, Theme};
+use iced::{Element, Fill, Length, Padding, Size, Theme, window};
 
 pub fn main() -> iced::Result {
+    let icon = load_window_icon();
     iced::application(App::boot, App::update, App::view)
         .title("Notelook")
         .theme(theme)
         .window_size(Size::new(900.0, 600.0))
+        .window(window::Settings {
+            icon,
+            ..Default::default()
+        })
         .run()
+}
+
+// fn load_window_icon() -> Option<window::Icon> {
+//     const ICON_BYTES: &[u8] = include_bytes!("../assets/icon.rgba");
+//     window::icon::from_rgba(ICON_BYTES.to_vec(), 32, 32).ok()
+// }
+
+fn load_window_icon() -> Option<window::Icon> {
+    // Embed the original logo.png directly into the binary
+    const PNG_BYTES: &[u8] = include_bytes!("../assets/logo.png");
+
+    let img = image::load_from_memory(PNG_BYTES)
+        .map_err(|e| eprintln!("Failed to decode PNG: {e}"))
+        .ok()?
+        .to_rgba8();
+
+    let (width, height) = img.dimensions();
+
+    window::icon::from_rgba(img.into_raw(), width, height)
+        .map_err(|e| eprintln!("Failed to build window icon: {e}"))
+        .ok()
 }
 
 fn theme(_state: &App) -> Theme {
