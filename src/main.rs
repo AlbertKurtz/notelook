@@ -1,70 +1,98 @@
-mod db;
+use iced::widget::{button, column, row, space, text, text_editor};
+use iced::{Element, Fill, Length, Padding, Size, Theme};
 
-mod embed;
-
-use embed::Embedder;
-use std::io;
-use std::path::Path;
-use tokio::sync::watch::error;
-
-use db::{add_chunks, add_label, add_note, init_db, last_notes, search_chunks};
-use std::fs;
-use turso::{Builder, Connection};
-
-enum Task {
-    Add,
-    Search(String),
+pub fn main() -> iced::Result {
+    iced::application(App::boot, App::update, App::view)
+        .title("Notelook")
+        .theme(theme)
+        .window_size(Size::new(900.0, 600.0))
+        .run()
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    let task = match args.get(1).map(|s| s.as_str()) {
-        Some("add") => Task::Add,
-        Some("search") => {
-            let query = args
-                .get(2)
-                .cloned()
-                .unwrap_or_else(|| "a good fantasy book?".to_string());
-            Task::Search(query)
-        }
-        _ => {
-            // Default to Search if no argument is provided
-            let query = args
-                .get(1)
-                .cloned()
-                .unwrap_or_else(|| "Why did the cache fail?".to_string());
-            Task::Search(query)
-        }
-    };
+fn theme(_state: &App) -> Theme {
+    Theme::TokyoNightStorm
+}
 
-    let db = Builder::new_local("app.db").build().await?;
-    let conn = db.connect()?;
-    conn.execute("PRAGMA foreign_keys = ON;", ()).await?;
-    init_db(&conn).await?;
+#[derive(Default)]
+struct App {
+    content: text_editor::Content,
+    status_msg: String,
+    current_note_id: Option<i64>,
+}
 
-    let embedder = Embedder::try_new()?;
+#[derive(Debug, Clone)]
+enum Message {
+    Edit(text_editor::Action),
+    NewNote,
+    SaveNote,
+    Quit,
+}
 
-    match task {
-        Task::Add => add(&conn, &embedder).await?,
-        Task::Search(query) => {
-            search_chunks(&query, &embedder, &conn, 5).await?;
+impl App {
+    fn boot() -> Self {
+        Self {
+            content: text_editor::Content::new(),
+            status_msg: String::from("Ready"),
+            current_note_id: None,
         }
     }
-    Ok(())
-}
 
-async fn add(conn: &Connection, embedder: &Embedder) -> Result<(), Box<dyn std::error::Error>> {
-    let original_text = get_text_from_file("my_text.md").unwrap();
-    let texts: Vec<&str> = original_text.split("[***]").collect();
-    for text in texts.iter() {
-        let note_id = add_note(text.to_string(), &conn).await?;
-        add_chunks(note_id, &text, &embedder, &conn).await?;
-        last_notes(20, &conn).await?;
+    fn update(&mut self, _message: Message) {
+        match _message {
+            Message::Edit(action) => {
+                self.content.perform(action);
+            }
+            Message::NewNote => {
+                self.content = text_editor::Content::new();
+                self.current_note_id = None;
+                self.status_msg = String::from("New note created");
+            }
+            Message::SaveNote => {
+                let note_text = self.content.text();
+                if note_text.trim().is_empty() {
+                    self.status_msg = String::from("Cannot save empty note");
+                } else {
+                    self.status_msg = String::from("Saving...");
+                }
+            }
+            Message::Quit => {
+                std::process::exit(0);
+            }
+        }
     }
-    Ok(())
-}
 
-fn get_text_from_file(file_path: impl AsRef<Path>) -> io::Result<String> {
-    fs::read_to_string(file_path)
+    fn view(&self) -> Element<Message> {
+        let text_size = 13;
+        let line_count = self.content.line_count();
+        let char_count = self.content.text().chars().count();
+        let stats_info = format!("Lines: {line_count} | Chars: {char_count}");
+        let save_status = if self.status_msg.is_empty() {
+            "Ready"
+        } else {
+            &self.status_msg
+        };
+
+        let action_bar = row![
+            button("New").on_press(Message::NewNote),
+            button("Save").on_press(Message::SaveNote),
+            space::horizontal(),
+            text(save_status).size(text_size),
+            text(" . ").size(text_size),
+            text(stats_info).size(text_size)
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center);
+
+        let editor = text_editor(&self.content)
+            .placeholder("Type your note here...")
+            .on_action(Message::Edit)
+            .height(Fill);
+
+        column![action_bar, editor]
+            .spacing(12)
+            .padding(Padding::new(16.0))
+            .width(Fill)
+            .height(Fill)
+            .into()
+    }
 }
