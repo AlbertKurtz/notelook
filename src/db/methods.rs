@@ -78,6 +78,41 @@ pub async fn add_chunks(
     Ok(chunks.len())
 }
 
+pub async fn search_chunks(
+    query: &str,
+    embedder: &Embedder,
+    conn: &Connection,
+    limit: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let query_vec = embedder.compute(query)?;
+    let query_vec_str = serde_json::to_string(&query_vec)?;
+
+    let mut rows = conn
+        .query(
+            "SELECT content, vector_distance_cos(embedding, vector(?1))
+        AS distance FROM chunks
+        ORDER BY distance ASC
+        LIMIT ?2",
+            (query_vec_str, limit as i64),
+        )
+        .await?;
+
+    println!("\nQuery: \"{query}\"");
+    while let Some(row) = rows.next().await? {
+        let content: String = row.get(0)?;
+        let distance: f64 = row.get(1)?;
+        println!("--------------------------------------------------");
+        println!(
+            "Distance: {:.4} (Similarity: {:.1}%)",
+            distance,
+            (1.0 - distance) * 100.0
+        );
+        println!("{content}");
+    }
+
+    Ok(())
+}
+
 pub async fn note_by_id(id: i32, conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
     // let text: String = "A random note to you =),  second one lol!".to_string();
     let mut row_by_id = conn
