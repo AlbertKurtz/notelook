@@ -4,12 +4,9 @@ mod embed;
 
 use embed::Embedder;
 use std::io;
-use std::{
-    error::Error,
-    path::{self, Path},
-};
+use std::path::Path;
 
-use db::{add_label, add_note, init_db, last_notes};
+use db::{add_chunks, add_label, add_note, init_db, last_notes};
 use std::fs;
 use turso::Builder;
 
@@ -22,11 +19,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let embedder = Embedder::try_new()?;
 
-    let text = get_text_from_file("my_text.md").unwrap();
-    add_note(text.to_string(), &conn).await?;
-    // all_notes(&conn).await?;
-    last_notes(20, &conn).await?;
-    add_label("loco!", 10, &conn).await?;
+    let original_text = get_text_from_file("my_text.md").unwrap();
+    let texts: Vec<&str> = original_text.split("[***]").collect();
+    for text in texts.iter() {
+        let note_id = add_note(text.to_string(), &conn).await?;
+        add_chunks(note_id, &text, &embedder, &conn).await?;
+        // all_notes(&conn).await?;
+        last_notes(20, &conn).await?;
+        // add_label("loco!", 10, &conn).await?;
+    }
     // delete_note(5, &conn).await?;
     // all_notes(&conn).await?;
     Ok(())

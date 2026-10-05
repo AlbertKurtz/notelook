@@ -1,15 +1,81 @@
+use text_splitter::{ChunkConfig, TextSplitter};
+use tokenizers::Tokenizer;
 use turso::Connection;
 
-pub async fn add_note(text: String, conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
-    // let text: String = "A random note to you =),  second one lol!".to_string();
+use crate::embed::Embedder;
 
-    let rows_affected = conn
-        .execute("INSERT INTO notes (content) VALUES (?1)", (text,))
+pub async fn add_note(text: String, conn: &Connection) -> Result<i64, Box<dyn std::error::Error>> {
+    let mut rows = conn
+        .query(
+            "INSERT INTO notes (content) VALUES (?1) RETURNING id",
+            (text,),
+        )
         .await?;
 
-    println!("affected {rows_affected} rows");
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| "Failed to retrieve inserted note ID".to_string())?;
 
-    Ok(())
+    let note_id: i64 = row.get(0)?;
+    println!("created note with id: {note_id}");
+
+    Ok(note_id)
+}
+
+pub fn chunk_with_tokenizer(
+    text: &str,
+    tokenizer: Tokenizer,
+    max_tokens: usize,
+    token_overlap: usize,
+) -> anyhow::Result<Vec<String>> {
+    let mut tok = tokenizer;
+    tok.with_truncation(None)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let config = ChunkConfig::new(max_tokens)
+        .with_sizer(tok)
+        .with_overlap(token_overlap)?;
+
+    let splitter = TextSplitter::new(config);
+    let chunks: Vec<String> = splitter.chunks(text).map(|s| s.to_string()).collect();
+
+    Ok(chunks)
+}
+
+pub async fn add_chunks(
+    note_id: i64,
+    text: &str,
+    embedder: &Embedder,
+    conn: &Connection,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let tokenizer = embedder.tokenizer();
+    let max_tokens = 256;
+    let overlap = 32;
+
+    let chunks = chunk_with_tokenizer(text, tokenizer, max_tokens, overlap)?;
+    if chunks.is_empty() {
+        return Ok(0);
+    }
+
+    let emb = embedder.clone();
+    let chunks_to_embed = chunks.clone();
+    let embeddings = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Vec<f32>>> {
+        emb.embed_batch(&chunks_to_embed)
+    })
+    .await??;
+
+    for (idx, (chunk_content, vector)) in chunks.iter().zip(embeddings.iter()).enumerate() {
+        let vector_str = serde_json::to_string(vector)?;
+
+        conn.execute(
+            "INSERT INTO chunks (note_id, chunk_index, content, embedding)
+                         VALUES (?1, ?2, ?3, vector(?4))",
+            (note_id, idx as i64, chunk_content.as_str(), vector_str),
+        )
+        .await?;
+    }
+    Ok(chunks.len())
 }
 
 pub async fn note_by_id(id: i32, conn: &Connection) -> Result<(), Box<dyn std::error::Error>> {
@@ -88,8 +154,7 @@ pub async fn add_label(
             INSERT OR IGNORE INTO labels (label, note_id) VALUES (?1, ?2)
         ";
 
-    let new_label = conn.execute(sql, (label, note_id)).await?;
-    // print!("{new_label}");
+    let _new_label = conn.execute(sql, (label, note_id)).await?;
 
     Ok(())
 }
