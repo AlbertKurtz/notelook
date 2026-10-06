@@ -1,60 +1,95 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, ensure};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
 use hf_hub::api::sync::Api;
+use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokenizers::{PaddingParams, Tokenizer};
+use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
+
+use crate::chunk::Chunker;
+use crate::config::{EMBED_DIM, EMBED_MAX_TOKENS, EMBED_MODEL_ID};
 
 #[derive(Clone)]
 pub struct Embedder {
     model: Arc<BertModel>,
     tokenizer: Arc<Tokenizer>,
+    tokenizer_path: PathBuf,
     device: Device,
+}
+impl fmt::Debug for Embedder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Embedder")
+            .field("model", &EMBED_MODEL_ID)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Embedder {
     pub fn try_new() -> Result<Self> {
         let device = Device::Cpu;
         let api = Api::new().context("Failed to initialize Hugging Face Api client")?;
-        let repo = api.model("sentence-transformers/all-MiniLM-L6-v2".to_string());
+        let repo = api.model(EMBED_MODEL_ID.to_string());
 
         let config_path = repo
             .get("config.json")
-            .context("Failed to get config.json")?;
+            .context("failed to get config.json")?;
         let tokenizer_path = repo
             .get("tokenizer.json")
-            .context("Failed to get tokenizer.json")?;
+            .context("failed to get tokenizer.json")?;
         let weights_path = repo
             .get("model.safetensors")
-            .context("Failed to get model.safetensors")?;
+            .context("failed to get model.safetensors")?;
 
-        let config_str = std::fs::read_to_string(config_path)?;
-        let config: Config = serde_json::from_str(&config_str)?;
+        let config: Config = serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
 
-        let mut tokenizer = Tokenizer::from_file(tokenizer_path).map_err(|e| anyhow!("{e}"))?;
-
+        let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| anyhow!("{e}"))?;
         tokenizer.with_padding(Some(PaddingParams {
             strategy: tokenizers::PaddingStrategy::BatchLongest,
             ..Default::default()
         }));
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: EMBED_MAX_TOKENS,
+                ..Default::default()
+            }))
+            .map_err(|e| anyhow!("{e}"))?;
 
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
         let model = BertModel::load(vb, &config)?;
 
-        Ok(Self {
+        let embedder = Self {
             model: Arc::new(model),
             tokenizer: Arc::new(tokenizer),
+            tokenizer_path,
             device,
-        })
+        };
+
+        let probe = embedder.compute("dimension probe")?;
+        ensure!(
+            probe.len() == EMBED_DIM,
+            "model {EMBED_MODEL_ID} produces {} dims but the schema expects {EMBED_DIM}",
+            probe.len()
+        );
+
+        Ok(embedder)
+    }
+
+    pub fn model_id(&self) -> &'static str {
+        EMBED_MODEL_ID
+    }
+
+    pub fn chunker(&self, max_tokens: usize, overlap: usize) -> Result<Chunker> {
+        let tokenizer = Tokenizer::from_file(&self.tokenizer_path).map_err(|e| anyhow!("{e}"))?;
+        Chunker::new(tokenizer, max_tokens, overlap)
     }
 
     pub fn compute(&self, text: &str) -> Result<Vec<f32>> {
-        let mut results = self.embed_batch(&[text])?;
-        results
+        self.embed_batch(&[text])?
             .pop()
-            .context("Failed to extract embedding from batch")
+            .context("embedding batch was empty")
     }
 
     pub fn embed_batch<S: AsRef<str>>(&self, sentence: &[S]) -> Result<Vec<Vec<f32>>> {
@@ -68,50 +103,56 @@ impl Embedder {
             .encode_batch(sentence_strs, true)
             .map_err(|e| anyhow!("{e}"))?;
 
-        // 1. Correct: Token IDs for vocabulary indexing
-        let token_ids: Vec<Tensor> = encodings
-            .iter()
-            .map(|e| Tensor::new(e.get_ids(), &self.device))
-            .collect::<candle_core::Result<Vec<_>>>()?;
+        let to_tensor = |f: &dyn Fn(&tokenizers::Encoding) -> &[u32]| -> Result<Tensor> {
+            let rows = encodings
+                .iter()
+                .map(|e| Tensor::new(f(e), &self.device))
+                .collect::<candle_core::Result<Vec<_>>>()?;
+            Ok(Tensor::stack(&rows, 0)?)
+        };
 
-        // 2. Token type IDs for segment distinction
-        let token_type_ids: Vec<Tensor> = encodings
-            .iter()
-            .map(|e| Tensor::new(e.get_type_ids(), &self.device))
-            .collect::<candle_core::Result<Vec<_>>>()?;
+        let input_ids = to_tensor(&|e| e.get_ids())?; //             [b, s]
+        let token_type_ids = to_tensor(&|e| e.get_type_ids())?; //   [b, s]
+        let attention_mask = to_tensor(&|e| e.get_attention_mask())?.to_dtype(DType::F32)?; //                               [b, s]
 
-        let input_ids = Tensor::stack(&token_ids, 0)?;
-        let token_type_ids = Tensor::stack(&token_type_ids, 0)?;
+        let ys = self
+            .model
+            .forward(&input_ids, &token_type_ids, Some(&attention_mask))?; // [b, s, h]
 
-        // Forward pass
-        let ys = self.model.forward(&input_ids, &token_type_ids, None)?;
+        // Mean pooling over real tokens only
+        let pool_mask = attention_mask.unsqueeze(2)?; //                     [b, s, 1]
+        let summed = ys.broadcast_mul(&pool_mask)?.sum(1)?; //               [b, h]
+        let counts = pool_mask.sum(1)?.clamp(1e-9, f64::MAX)?; //            [b, 1]
+        let pooled = summed.broadcast_div(&counts)?; //                      [b, h]
 
-        // Attention mask: [batch, seq_len, 1] as F32
-        let attention_mask: Vec<Tensor> = encodings
-            .iter()
-            .map(|e| Tensor::new(e.get_attention_mask(), &self.device))
-            .collect::<candle_core::Result<Vec<_>>>()?;
+        // L2 normalization: dot product == cosine similarity
+        let norm = pooled.sqr()?.sum_keepdim(1)?.sqrt()?; //                 [b, 1]
+        let normalized = pooled.broadcast_div(&norm)?; //                    [b, h]
 
-        let attention_mask = Tensor::stack(&attention_mask, 0)?
-            .to_dtype(DType::F32)?
-            .unsqueeze(2)?;
-
-        let masked_embeddings = ys.broadcast_mul(&attention_mask)?;
-
-        // Mean Pooling
-        let sum_embeddings = masked_embeddings.sum(1)?;
-        let sum_mask = attention_mask.sum(1)?.clamp(1e-9, f64::MAX)?;
-        let pooled = sum_embeddings.broadcast_div(&sum_mask)?;
-
-        // L2 Normalization (dot product == cosine similarity)
-        let norm = pooled.sqr()?.sum_keepdim(1)?.sqrt()?;
-        let normalized = pooled.broadcast_div(&norm)?;
-
-        // Direct conversion of 2D tensor into Vec<Vec<f32>>
-        let results = normalized.to_vec2::<f32>()?;
-        Ok(results)
+        Ok(normalized.to_vec2::<f32>()?)
     }
     pub fn tokenizer(&self) -> tokenizers::Tokenizer {
         (*self.tokenizer).clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "downloads the model on first run"]
+    fn batching_does_not_change_embeddings() -> Result<()> {
+        let e = Embedder::try_new()?;
+        let short = "Marco said the cache failed.";
+        let long = "This is a much longer sentence that forces the short one \
+                    to be padded when both are encoded in the same batch.";
+
+        let alone = e.compute(short)?;
+        let batched = e.embed_batch(&[short, long])?;
+
+        let dot: f32 = alone.iter().zip(&batched[0]).map(|(a, b)| a * b).sum();
+        assert!(dot > 0.9999, "cosine similarity was {dot}");
+        Ok(())
     }
 }

@@ -4,12 +4,15 @@ version = "0.1.1"
 # authors = "Alberto Flor"
 edition = "2024"
 description = "Lightweight yet powerful notepad app"
+default-run = "notelook"
 
 [dependencies]
 anyhow = "1.0.104"
+blake3 = "1.8.7"
 candle-core = "0.11.0"
 candle-nn = "0.11.0"
 candle-transformers = "0.11.0"
+directories = "6.0.0"
 hf-hub = { version = "0.4", features = ["tokio"] }
 iced = { version = "0.14.0", features = ["tokio"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
