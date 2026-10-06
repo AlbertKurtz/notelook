@@ -600,6 +600,48 @@ pub mod config;
 pub mod db;
 pub mod embed;
 pub mod worker;
+---
+
+### 2.6 `src/chunk.rs` (Add `Debug` Implementation)
+
+Because `Message` in `src/main.rs` derives `Debug` and contains `Arc<Chunker>`, `Chunker` must implement `Debug` (just like `Embedder` does in `src/embed.rs`).
+
+Add `impl std::fmt::Debug for Chunker` in `src/chunk.rs`:
+
+```rust
+use anyhow::{Result, anyhow};
+use std::fmt;
+use text_splitter::{ChunkConfig, MarkdownSplitter};
+use tokenizers::Tokenizer;
+
+pub struct Chunker {
+    splitter: MarkdownSplitter<Tokenizer>,
+}
+
+impl fmt::Debug for Chunker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Chunker").finish_non_exhaustive()
+    }
+}
+
+impl Chunker {
+    pub fn new(mut tokenizer: Tokenizer, max_tokens: usize, overlap: usize) -> Result<Self> {
+        tokenizer
+            .with_truncation(None)
+            .map_err(|e| anyhow!("{e}"))?;
+        tokenizer.with_padding(None);
+
+        let config = ChunkConfig::new(max_tokens)
+            .with_sizer(tokenizer)
+            .with_overlap(overlap)?;
+        Ok(Self {
+            splitter: MarkdownSplitter::new(config),
+        })
+    }
+    pub fn split<'t>(&self, text: &'t str) -> Vec<(usize, &'t str)> {
+        self.splitter.chunk_indices(text).collect()
+    }
+}
 ```
 
 ---
@@ -725,7 +767,7 @@ Now we build the real application in `src/main.rs`.
 
 ```rust
 use iced::widget::{
-    button, column, container, horizontal_space, row, scrollable, text, text_editor, text_input,
+    button, column, container, row, scrollable, space, text, text_editor, text_input,
 };
 use iced::{
     Alignment, Border, Color, Element, Fill, Length, Padding, Size, Task, Theme, keyboard, window,
@@ -1012,7 +1054,7 @@ impl App {
                                 (id, changed)
                             }
                         };
-                        Ok((id, updated))
+                        anyhow::Ok((id, updated))
                     },
                     move |result| Message::NoteSaved(result.map_err(|e| format!("{e:#}"))),
                 )
@@ -1127,9 +1169,11 @@ impl App {
                         })
                         .await??;
 
-                        db.search(&query_vec, 15).await.map_err(|e| format!("{e:#}"))
+                        db.search(&query_vec, 15).await
                     },
-                    Message::SearchResultsLoaded,
+                    move |result| {
+                        Message::SearchResultsLoaded(result.map_err(|e| format!("{e:#}")))
+                    },
                 )
             }
 
@@ -1170,7 +1214,7 @@ impl App {
     fn view_sidebar(&self) -> Element<'_, Message> {
         let title_row = row![
             text("Notes").size(18),
-            horizontal_space(),
+            space::horizontal(),
             button("+ New").on_press(Message::NewNote).padding([4, 10]),
         ]
         .align_y(Alignment::Center);
@@ -1205,7 +1249,7 @@ impl App {
                             column![
                                 row![
                                     text(format!("Note {}", hit.note_id)).size(13),
-                                    horizontal_space(),
+                                    space::horizontal(),
                                     text(sim_badge).size(12),
                                 ],
                                 text(preview).size(12),
@@ -1289,7 +1333,7 @@ impl App {
 
         let action_bar = row![
             text(note_header).size(16),
-            horizontal_space(),
+            space::horizontal(),
             button("Save (Ctrl+S)")
                 .on_press_maybe(self.can_save().then_some(Message::SaveNote))
                 .padding([6, 12]),
@@ -1314,7 +1358,7 @@ impl App {
 
         let status_bar = row![
             text(&self.status).size(12),
-            horizontal_space(),
+            space::horizontal(),
             text(format!(
                 "Lines: {} | Chars: {} | {}",
                 self.content.line_count(),

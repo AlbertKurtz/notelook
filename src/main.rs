@@ -1,9 +1,14 @@
-use iced::widget::{button, column, row, space, text, text_editor};
-use iced::{Element, Fill, Padding, Size, Task, Theme, keyboard, window};
+use iced::widget::{
+    button, column, container, row, scrollable, space, text, text_editor, text_input,
+};
+use iced::{
+    Alignment, Border, Color, Element, Fill, Length, Padding, Size, Task, Theme, keyboard, window,
+};
 use std::sync::Arc;
 
+use notelook::chunk::Chunker;
 use notelook::config;
-use notelook::db::{self, DbHandle};
+use notelook::db::{Db, Note, SearchHit};
 use notelook::embed::Embedder;
 use notelook::worker;
 
@@ -12,7 +17,7 @@ pub fn main() -> iced::Result {
         .title("Notelook")
         .theme(theme)
         .window(window::Settings {
-            size: Size::new(900.0, 600.0),
+            size: Size::new(1050.0, 680.0),
             icon: load_window_icon(),
             ..Default::default()
         })
@@ -46,16 +51,24 @@ enum ModelState {
 
 struct App {
     content: text_editor::Content,
-    /// Incremented on every edit.
     revision: u64,
-    /// Revision that was last written to the DB.
     saved_revision: u64,
     char_count: usize,
     saving: bool,
     status: String,
     current_note_id: Option<i64>,
-    db: Option<DbHandle>,
-    model: ModelState,
+
+    // Data & Models
+    db: Option<Db>,
+    embedder: Option<Arc<Embedder>>,
+    chunker: Option<Arc<Chunker>>,
+    model_state: ModelState,
+
+    // Sidebar & Search State
+    notes: Vec<Note>,
+    search_query: String,
+    search_results: Vec<SearchHit>,
+    is_searching: bool,
 }
 
 impl App {
@@ -68,52 +81,37 @@ impl App {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum SaveOutcome {
-    Created(i64),
-    Updated(i64),
-    Unchanged(i64),
-}
-
-impl SaveOutcome {
-    fn note_id(self) -> i64 {
-        match self {
-            Self::Created(id) | Self::Updated(id) | Self::Unchanged(id) => id,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 enum Message {
-    DbReady(Result<DbHandle, String>),
-    ModelReady(Result<(), String>),
+    DbReady(Result<Db, String>),
+    ModelReady(Result<(Arc<Embedder>, Arc<Chunker>), String>),
+    NotesLoaded(Result<Vec<Note>, String>),
+    SelectNote(i64),
+    NoteLoaded(Result<Option<Note>, String>),
     Edit(text_editor::Action),
     NewNote,
     SaveNote,
-    NoteSaved {
-        revision: u64,
-        result: Result<SaveOutcome, String>,
-    },
+    NoteSaved(Result<(i64, bool), String>),
+    DeleteNote,
+    NoteDeleted(Result<(), String>),
+    SearchInputChanged(String),
+    PerformSearch,
+    SearchResultsLoaded(Result<Vec<SearchHit>, String>),
+    ClearSearch,
     Quit,
 }
 
-// ─── async startup steps (plain functions: easy to read and test) ───────────
+// ─── async startup steps ────────────────────────────────────────────────────
 
-async fn open_database() -> anyhow::Result<DbHandle> {
+async fn open_database() -> anyhow::Result<Db> {
     let path = config::db_path()?;
-    let conn = db::open(&path).await?;
-    Ok(db::spawn_actor(conn))
+    Db::open(&path).await
 }
 
-async fn start_model(db: DbHandle) -> anyhow::Result<()> {
+async fn load_model() -> anyhow::Result<(Arc<Embedder>, Arc<Chunker>)> {
     let embedder = tokio::task::spawn_blocking(Embedder::try_new).await??;
     let chunker = embedder.chunker(config::CHUNK_MAX_TOKENS, config::CHUNK_OVERLAP)?;
-    tokio::spawn(worker::run_embed_worker(
-        db,
-        Arc::new(embedder),
-        Arc::new(chunker),
-    ));
-    Ok(())
+    Ok((Arc::new(embedder), Arc::new(chunker)))
 }
 
 // ─── update ─────────────────────────────────────────────────────────────────
@@ -129,7 +127,13 @@ impl App {
             status: String::from("Opening database…"),
             current_note_id: None,
             db: None,
-            model: ModelState::Loading,
+            embedder: None,
+            chunker: None,
+            model_state: ModelState::Loading,
+            notes: Vec::new(),
+            search_query: String::new(),
+            search_results: Vec::new(),
+            is_searching: false,
         };
 
         let task = Task::perform(
@@ -143,13 +147,24 @@ impl App {
         match message {
             Message::DbReady(Ok(db)) => {
                 self.db = Some(db.clone());
-                self.status = String::from("Ready");
-                // Step 2 of startup: load the model in the background.
-                // This is to be understood if i want the model local from the get go
-                Task::perform(
-                    async move { start_model(db).await.map_err(|e| format!("{e:#}")) },
+                self.status = String::from("Loading notes…");
+
+                // 1. Fetch recent notes list
+                let load_notes = Task::perform(
+                    {
+                        let db = db.clone();
+                        async move { db.recent_notes(50).await.map_err(|e| format!("{e:#}")) }
+                    },
+                    Message::NotesLoaded,
+                );
+
+                // 2. Load the embedding model in background
+                let load_model_task = Task::perform(
+                    async { load_model().await.map_err(|e| format!("{e:#}")) },
                     Message::ModelReady,
-                )
+                );
+
+                Task::batch([load_notes, load_model_task])
             }
             Message::DbReady(Err(e)) => {
                 self.status = format!("Database error: {e}");
@@ -157,15 +172,66 @@ impl App {
                 Task::none()
             }
 
-            Message::ModelReady(Ok(())) => {
-                self.model = ModelState::Ready;
+            Message::NotesLoaded(Ok(notes)) => {
+                self.notes = notes;
+                self.status = String::from("Ready");
+                Task::none()
+            }
+            Message::NotesLoaded(Err(e)) => {
+                self.status = format!("Could not load notes: {e}");
+                Task::none()
+            }
+
+            Message::ModelReady(Ok((embedder, chunker))) => {
+                self.embedder = Some(Arc::clone(&embedder));
+                self.chunker = Some(Arc::clone(&chunker));
+                self.model_state = ModelState::Ready;
+
+                // Sync any unindexed notes in the background
+                if let Some(db) = self.db.clone() {
+                    tokio::spawn(async move {
+                        let _ = worker::index_unindexed_notes(db, embedder, chunker).await;
+                    });
+                }
                 Task::none()
             }
             Message::ModelReady(Err(e)) => {
-                // Notes still save; their jobs wait in the queue until next start.
-                self.model = ModelState::Failed;
-                self.status = format!("Model error (notes still save): {e}");
+                self.model_state = ModelState::Failed;
+                self.status = format!("Model error: {e}");
                 eprintln!("{e}");
+                Task::none()
+            }
+
+            Message::SelectNote(id) => {
+                if self.is_dirty() {
+                    self.status = String::from("Unsaved changes: save before switching notes");
+                    return Task::none();
+                }
+                let Some(db) = self.db.clone() else {
+                    return Task::none();
+                };
+                self.status = String::from("Loading note…");
+                Task::perform(
+                    async move { db.get_note(id).await.map_err(|e| format!("{e:#}")) },
+                    Message::NoteLoaded,
+                )
+            }
+
+            Message::NoteLoaded(Ok(Some(note))) => {
+                self.content = text_editor::Content::with_text(&note.content);
+                self.current_note_id = Some(note.id);
+                self.revision = 0;
+                self.saved_revision = 0;
+                self.char_count = self.content.text().chars().count();
+                self.status = format!("Loaded note {}", note.id);
+                Task::none()
+            }
+            Message::NoteLoaded(Ok(None)) => {
+                self.status = String::from("Note not found");
+                Task::none()
+            }
+            Message::NoteLoaded(Err(e)) => {
+                self.status = format!("Error loading note: {e}");
                 Task::none()
             }
 
@@ -174,7 +240,6 @@ impl App {
                 self.content.perform(action);
                 if is_edit {
                     self.revision += 1;
-                    // Once per keystroke is fine; once per frame is not.
                     self.char_count = self.content.text().chars().count();
                 }
                 Task::none()
@@ -198,8 +263,8 @@ impl App {
                 if !self.can_save() {
                     return Task::none();
                 }
-                let note_text = self.content.text();
-                if note_text.trim().is_empty() {
+                let text = self.content.text();
+                if text.trim().is_empty() {
                     self.status = String::from("Cannot save an empty note");
                     return Task::none();
                 }
@@ -209,89 +274,327 @@ impl App {
 
                 self.saving = true;
                 self.status = String::from("Saving…");
-                let revision = self.revision;
-                // note id same for a revision, +1 for a new one
                 let note_id = self.current_note_id;
+                let text_clone = text.clone();
 
                 Task::perform(
                     async move {
-                        let outcome = match note_id {
-                            None => SaveOutcome::Created(db.insert_note(note_text).await?),
+                        let (id, updated) = match note_id {
+                            None => (db.insert_note(&text_clone).await?, true),
                             Some(id) => {
-                                if db.update_note(id, note_text).await? {
-                                    SaveOutcome::Updated(id)
-                                } else {
-                                    SaveOutcome::Unchanged(id)
-                                }
+                                let changed = db.update_note(id, &text_clone).await?;
+                                (id, changed)
                             }
                         };
-                        anyhow::Ok(outcome)
+                        anyhow::Ok((id, updated)) // <- anyhow::Ok here
                     },
-                    move |result| Message::NoteSaved {
-                        revision,
-                        result: result.map_err(|e| format!("{e:#}")),
-                    },
+                    move |result| Message::NoteSaved(result.map_err(|e| format!("{e:#}"))),
                 )
             }
 
-            Message::NoteSaved { revision, result } => {
+            Message::NoteSaved(Ok((id, changed))) => {
                 self.saving = false;
-                match result {
-                    Ok(outcome) => {
-                        self.current_note_id = Some(outcome.note_id());
-                        self.saved_revision = revision;
-                        self.status = match outcome {
-                            SaveOutcome::Created(id) => format!("Note {id} created"),
-                            SaveOutcome::Updated(id) => format!("Note {id} updated"),
-                            SaveOutcome::Unchanged(id) => format!("Note {id}: no changes"),
-                        };
+                self.current_note_id = Some(id);
+                self.saved_revision = self.revision;
+                self.status = if changed {
+                    format!("Note {id} saved")
+                } else {
+                    format!("Note {id}: unchanged")
+                };
+
+                // Asynchronously trigger embedding in background if content changed
+                if changed {
+                    if let (Some(db), Some(emb), Some(chk)) =
+                        (self.db.clone(), self.embedder.clone(), self.chunker.clone())
+                    {
+                        let content = self.content.text();
+                        tokio::spawn(async move {
+                            let _ = worker::embed_note(db, emb, chk, id, content).await;
+                        });
                     }
-                    Err(e) => self.status = format!("Save failed: {e}"),
+                }
+
+                // Refresh the sidebar notes list
+                if let Some(db) = self.db.clone() {
+                    Task::perform(
+                        async move { db.recent_notes(50).await.map_err(|e| format!("{e:#}")) },
+                        Message::NotesLoaded,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::NoteSaved(Err(e)) => {
+                self.saving = false;
+                self.status = format!("Save failed: {e}");
+                Task::none()
+            }
+
+            Message::DeleteNote => {
+                let Some(id) = self.current_note_id else {
+                    return Task::none();
+                };
+                let Some(db) = self.db.clone() else {
+                    return Task::none();
+                };
+
+                self.status = format!("Deleting note {id}…");
+                Task::perform(
+                    async move { db.delete_note(id).await.map_err(|e| format!("{e:#}")) },
+                    Message::NoteDeleted,
+                )
+            }
+
+            Message::NoteDeleted(Ok(())) => {
+                self.content = text_editor::Content::new();
+                self.current_note_id = None;
+                self.revision = 0;
+                self.saved_revision = 0;
+                self.char_count = 0;
+                self.status = String::from("Note deleted");
+
+                // Refresh sidebar
+                if let Some(db) = self.db.clone() {
+                    Task::perform(
+                        async move { db.recent_notes(50).await.map_err(|e| format!("{e:#}")) },
+                        Message::NotesLoaded,
+                    )
+                } else {
+                    Task::none()
+                }
+            }
+            Message::NoteDeleted(Err(e)) => {
+                self.status = format!("Delete failed: {e}");
+                Task::none()
+            }
+
+            Message::SearchInputChanged(query) => {
+                self.search_query = query;
+                if self.search_query.trim().is_empty() {
+                    self.is_searching = false;
+                    self.search_results.clear();
                 }
                 Task::none()
             }
 
-            // not gently quit, need to look into this
+            Message::PerformSearch => {
+                let query = self.search_query.trim().to_string();
+                if query.is_empty() {
+                    self.is_searching = false;
+                    self.search_results.clear();
+                    return Task::none();
+                }
+                let (Some(db), Some(embedder)) = (self.db.clone(), self.embedder.clone()) else {
+                    self.status = String::from("Embedding model not ready yet");
+                    return Task::none();
+                };
+
+                self.is_searching = true;
+                self.status = format!("Searching for \"{query}\"…");
+
+                Task::perform(
+                    async move {
+                        let query_vec = tokio::task::spawn_blocking({
+                            let emb = Arc::clone(&embedder);
+                            let q = query.clone();
+                            move || emb.compute(&q)
+                        })
+                        .await??;
+
+                        db.search(&query_vec, 15).await
+                    },
+                    move |result| {
+                        Message::SearchResultsLoaded(result.map_err(|e| format!("{e:#}")))
+                    },
+                )
+            }
+
+            Message::SearchResultsLoaded(Ok(results)) => {
+                self.status = format!("Found {} semantic matches", results.len());
+                self.search_results = results;
+                Task::none()
+            }
+            Message::SearchResultsLoaded(Err(e)) => {
+                self.status = format!("Search error: {e}");
+                Task::none()
+            }
+
+            Message::ClearSearch => {
+                self.search_query.clear();
+                self.search_results.clear();
+                self.is_searching = false;
+                self.status = String::from("Search cleared");
+                Task::none()
+            }
+
             Message::Quit => iced::exit(),
         }
     }
+
     // ─── view ───────────────────────────────────────────────────────────────
 
     fn view(&self) -> Element<'_, Message> {
-        let size = 13;
+        let sidebar = self.view_sidebar();
+        let editor = self.view_editor();
 
-        // signal unsaved file
-        let dirty_mark = if self.is_dirty() { "● " } else { "" };
-        let model_label = match self.model {
-            ModelState::Loading => "model loading…",
-            ModelState::Ready => "search ready",
-            ModelState::Failed => "model unavailable",
-        };
-        let stats = format!(
-            "{dirty_mark}Lines: {} | Chars: {} | {model_label}",
-            self.content.line_count(),
-            self.char_count
-        );
+        row![sidebar, editor].width(Fill).height(Fill).into()
+    }
 
-        // maybe this will be changed with more Win95 feel dropdown menu lol
-        let action_bar = row![
-            button("New").on_press(Message::NewNote),
-            button("Save").on_press_maybe(self.can_save().then_some(Message::SaveNote)),
+    fn view_sidebar(&self) -> Element<'_, Message> {
+        let title_row = row![
+            text("Notes").size(18),
             space::horizontal(),
-            text(&self.status).size(size),
-            text(" · ").size(size),
-            text(stats).size(size),
+            button("+ New").on_press(Message::NewNote).padding([4, 10]),
         ]
-        .spacing(10)
-        .align_y(iced::Alignment::Center);
+        .align_y(Alignment::Center);
+
+        let search_box = row![
+            text_input("Semantic search…", &self.search_query)
+                .on_input(Message::SearchInputChanged)
+                .on_submit(Message::PerformSearch)
+                .padding(8),
+            if self.is_searching {
+                button("✕").on_press(Message::ClearSearch).padding([6, 8])
+            } else {
+                button("🔍")
+                    .on_press(Message::PerformSearch)
+                    .padding([6, 8])
+            }
+        ]
+        .spacing(6);
+
+        let list_content: Element<'_, Message> = if self.is_searching {
+            if self.search_results.is_empty() {
+                container(text("No matches found").size(13))
+                    .padding(16)
+                    .into()
+            } else {
+                let items: Vec<Element<'_, Message>> = self
+                    .search_results
+                    .iter()
+                    .map(|hit| {
+                        let preview: String = hit.content.chars().take(80).collect();
+                        let sim_badge = format!("{:.0}% match", hit.similarity_percent());
+
+                        button(
+                            column![
+                                row![
+                                    text(format!("Note {}", hit.note_id)).size(13),
+                                    space::horizontal(),
+                                    text(sim_badge).size(12),
+                                ],
+                                text(preview).size(12),
+                            ]
+                            .spacing(4),
+                        )
+                        .on_press(Message::SelectNote(hit.note_id))
+                        .width(Fill)
+                        .padding(8)
+                        .into()
+                    })
+                    .collect();
+
+                scrollable(column(items).spacing(6)).height(Fill).into()
+            }
+        } else {
+            let items: Vec<Element<'_, Message>> = self
+                .notes
+                .iter()
+                .map(|note| {
+                    let is_active = self.current_note_id == Some(note.id);
+                    let title = note.title();
+                    let date = &note.updated_at;
+
+                    button(column![text(title).size(14), text(date).size(11),].spacing(2))
+                        .on_press(Message::SelectNote(note.id))
+                        .width(Fill)
+                        .padding(8)
+                        .style(move |theme, status| {
+                            let mut style = button::primary(theme, status);
+                            if is_active {
+                                style.border = Border {
+                                    color: Color::from_rgb(0.4, 0.6, 1.0),
+                                    width: 1.5,
+                                    radius: 4.0.into(),
+                                };
+                            }
+                            style
+                        })
+                        .into()
+                })
+                .collect();
+
+            scrollable(column(items).spacing(4)).height(Fill).into()
+        };
+
+        container(
+            column![title_row, search_box, list_content]
+                .spacing(12)
+                .width(Length::Fixed(280.0))
+                .height(Fill),
+        )
+        .padding(12)
+        .style(|theme: &Theme| {
+            let palette = theme.palette();
+            container::Style {
+                background: Some(palette.background.into()),
+                border: Border {
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.08),
+                    width: 1.0,
+                    radius: 0.0.into(),
+                },
+                ..Default::default()
+            }
+        })
+        .into()
+    }
+
+    fn view_editor(&self) -> Element<'_, Message> {
+        let dirty_mark = if self.is_dirty() { "● " } else { "" };
+        let note_header = match self.current_note_id {
+            Some(id) => format!("{dirty_mark}Note #{id}"),
+            None => format!("{dirty_mark}New Note (Unsaved)"),
+        };
+
+        let action_bar = row![
+            text(note_header).size(16),
+            space::horizontal(),
+            button("Save (Ctrl+S)")
+                .on_press_maybe(self.can_save().then_some(Message::SaveNote))
+                .padding([6, 12]),
+            button("Delete")
+                .on_press_maybe(self.current_note_id.map(|_| Message::DeleteNote))
+                .padding([6, 12]),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center);
 
         let editor = text_editor(&self.content)
-            .placeholder("Type your note here…")
+            .placeholder("Type your markdown note here…")
             .on_action(Message::Edit)
             .key_binding(editor_bindings)
             .height(Fill);
 
-        column![action_bar, editor]
+        let model_label = match self.model_state {
+            ModelState::Loading => "Model loading…",
+            ModelState::Ready => "AI Search Ready",
+            ModelState::Failed => "AI Search Unavailable",
+        };
+
+        let status_bar = row![
+            text(&self.status).size(12),
+            space::horizontal(),
+            text(format!(
+                "Lines: {} | Chars: {} | {}",
+                self.content.line_count(),
+                self.char_count,
+                model_label
+            ))
+            .size(12),
+        ]
+        .align_y(Alignment::Center);
+
+        column![action_bar, editor, status_bar]
             .spacing(12)
             .padding(Padding::new(16.0))
             .width(Fill)
@@ -300,8 +603,6 @@ impl App {
     }
 }
 
-/// Ctrl+S / Ctrl+N / Ctrl+Q while the editor has focus; everything else
-/// falls through to the editor's default bindings.
 fn editor_bindings(key_press: text_editor::KeyPress) -> Option<text_editor::Binding<Message>> {
     use keyboard::Key;
 

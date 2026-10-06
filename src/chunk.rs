@@ -1,9 +1,15 @@
 use anyhow::{Result, anyhow};
+use std::fmt;
 use text_splitter::{ChunkConfig, MarkdownSplitter};
 use tokenizers::Tokenizer;
 
 pub struct Chunker {
     splitter: MarkdownSplitter<Tokenizer>,
+}
+impl fmt::Debug for Chunker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Chunker").finish_non_exhaustive()
+    }
 }
 
 impl Chunker {

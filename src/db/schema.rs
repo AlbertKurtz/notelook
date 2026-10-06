@@ -4,11 +4,10 @@ use turso::Connection;
 use super::repo::{finish_tx, get_meta, set_meta};
 
 /// Each entry is one schema version; each version is a list of statements.
-/// Index 0 = version 1. Append only, never edit.
 const MIGRATIONS: &[&[&str]] = &[
     // ── v1 ──────────────────────────────────────────────
     &[
-        "CREATE TABLE notes (
+        "CREATE TABLE IF NOT EXISTS notes (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
             created_at   TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
@@ -17,14 +16,13 @@ const MIGRATIONS: &[&[&str]] = &[
             content      TEXT NOT NULL,
             content_hash TEXT NOT NULL
         )",
-        "CREATE TABLE labels (
+        "CREATE TABLE IF NOT EXISTS labels (
             id      INTEGER PRIMARY KEY AUTOINCREMENT,
             note_id INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
             label   TEXT NOT NULL,
             UNIQUE(note_id, label)
         )",
-        // Keep 384 in sync with config::EMBED_DIM
-        "CREATE TABLE chunks (
+        "CREATE TABLE IF NOT EXISTS chunks (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             note_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
             chunk_index INTEGER NOT NULL,
@@ -33,21 +31,8 @@ const MIGRATIONS: &[&[&str]] = &[
             embedding   F32_BLOB(384),
             UNIQUE(note_id, chunk_index)
         )",
-        "CREATE INDEX idx_chunks_note_id ON chunks(note_id)",
-        // One job per (kind, note). Re-saving a note replaces its job.
-        "CREATE TABLE jobs (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            kind       TEXT NOT NULL,
-            note_id    INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
-            status     TEXT NOT NULL DEFAULT 'pending',
-            attempts   INTEGER NOT NULL DEFAULT 0,
-            last_error TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            UNIQUE(kind, note_id)
-        )",
-        "CREATE INDEX idx_jobs_status ON jobs(kind, status)",
+        "CREATE INDEX IF NOT EXISTS idx_chunks_note_id ON chunks(note_id)",
     ],
-    // ── v2 goes here, e.g. entities/mentions tables ─────
 ];
 
 pub async fn migrate(conn: &Connection) -> Result<()> {

@@ -1,14 +1,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use notelook::db::{self, ChunkRow, repo};
-
-// do you trust these tests???
-
-async fn count(conn: &turso::Connection, sql: &str) -> Result<i64> {
-    let mut rows = conn.query(sql, ()).await?;
-    Ok(rows.next().await?.expect("COUNT returns a row").get(0)?)
-}
+use notelook::db::{ChunkRow, Db};
 
 fn fake_chunk(index: i64) -> ChunkRow {
     ChunkRow {
@@ -20,59 +13,72 @@ fn fake_chunk(index: i64) -> ChunkRow {
 }
 
 #[tokio::test]
-async fn insert_enqueues_an_embed_job() -> Result<()> {
-    let conn = db::open(Path::new(":memory:")).await?;
-    let id = repo::insert_note(&conn, "hello").await?;
+async fn insert_and_retrieve_note() -> Result<()> {
+    let db = Db::open(Path::new(":memory:")).await?;
+    let id = db
+        .insert_note("Meeting notes: project alpha launch")
+        .await?;
 
-    let job = repo::claim_next_job(&conn, "embed").await?.expect("a job");
-    assert_eq!(job.note_id, id);
-    assert!(repo::claim_next_job(&conn, "embed").await?.is_none());
+    let note = db.get_note(id).await?.expect("note exists");
+    assert_eq!(note.id, id);
+    assert_eq!(note.content, "Meeting notes: project alpha launch");
+    assert_eq!(note.title(), "Meeting notes: project alpha launch");
     Ok(())
 }
 
 #[tokio::test]
-async fn unchanged_update_is_skipped() -> Result<()> {
-    let conn = db::open(Path::new(":memory:")).await?;
-    let id = repo::insert_note(&conn, "same text").await?;
-    assert!(!repo::update_note(&conn, id, "same text").await?);
-    assert!(repo::update_note(&conn, id, "new text").await?);
+async fn unchanged_update_returns_false() -> Result<()> {
+    let db = Db::open(Path::new(":memory:")).await?;
+    let id = db.insert_note("initial content").await?;
+
+    // Same content -> returns false
+    assert!(!db.update_note(id, "initial content").await?);
+
+    // Changed content -> returns true
+    assert!(db.update_note(id, "updated content").await?);
+
+    let updated = db.get_note(id).await?.unwrap();
+    assert_eq!(updated.content, "updated content");
     Ok(())
 }
 
 #[tokio::test]
-async fn stale_job_result_is_discarded() -> Result<()> {
-    let conn = db::open(Path::new(":memory:")).await?;
-    let id = repo::insert_note(&conn, "v1").await?;
-    let old_job = repo::claim_next_job(&conn, "embed").await?.unwrap();
+async fn delete_cascades_to_chunks() -> Result<()> {
+    let db = Db::open(Path::new(":memory:")).await?;
+    let id = db.insert_note("note to delete").await?;
 
-    repo::update_note(&conn, id, "v2").await?; // replaces the job
+    let chunks = vec![fake_chunk(0), fake_chunk(1)];
+    db.save_chunks(id, &chunks).await?;
 
-    let written = repo::complete_embed_job(&conn, old_job.id, id, &[fake_chunk(0)]).await?;
-    assert!(!written, "stale result must not be written");
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM chunks").await?, 0);
+    // Search returns our chunk
+    let hits = db
+        .search(&vec![0.1; notelook::config::EMBED_DIM], 5)
+        .await?;
+    assert_eq!(hits.len(), 2);
+
+    // Delete the note
+    db.delete_note(id).await?;
+
+    // Chunks are gone due to ON DELETE CASCADE
+    let hits_after = db
+        .search(&vec![0.1; notelook::config::EMBED_DIM], 5)
+        .await?;
+    assert_eq!(hits_after.len(), 0);
     Ok(())
 }
 
 #[tokio::test]
-async fn delete_cascades_to_chunks_and_jobs() -> Result<()> {
-    let conn = db::open(Path::new(":memory:")).await?;
-    let id = repo::insert_note(&conn, "to be deleted").await?;
-    let job = repo::claim_next_job(&conn, "embed").await?.unwrap();
-    repo::complete_embed_job(&conn, job.id, id, &[fake_chunk(0), fake_chunk(1)]).await?;
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM chunks").await?, 2);
+async fn unindexed_notes_detection() -> Result<()> {
+    let db = Db::open(Path::new(":memory:")).await?;
+    let id1 = db.insert_note("note 1").await?;
+    let _id2 = db.insert_note("note 2").await?;
 
-    repo::delete_note(&conn, id).await?;
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM chunks").await?, 0);
-    assert_eq!(count(&conn, "SELECT COUNT(*) FROM jobs").await?, 0);
-    Ok(())
-}
+    // Save chunks for note 1 only
+    db.save_chunks(id1, &[fake_chunk(0)]).await?;
 
-#[tokio::test]
-async fn migrations_are_idempotent() -> Result<()> {
-    // Opening runs migrations; running them twice must not fail.
-    let conn = db::open(Path::new(":memory:")).await?;
-    drop(conn);
-    // For a file DB you'd reopen the same path here; :memory: is fresh each time,
-    // so this mainly checks that migrate() on an empty DB succeeds.
+    // note 2 is unindexed
+    let unindexed = db.unindexed_notes().await?;
+    assert_eq!(unindexed.len(), 1);
+    assert_eq!(unindexed[0].0, 2);
     Ok(())
 }
