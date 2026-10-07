@@ -393,14 +393,14 @@ impl App {
 
                 Task::perform(
                     async move {
+                        let q_clone = query.clone();
                         let query_vec = tokio::task::spawn_blocking({
                             let emb = Arc::clone(&embedder);
-                            let q = query.clone();
-                            move || emb.compute(&q)
+                            move || emb.compute(&q_clone)
                         })
                         .await??;
 
-                        db.search_semantic(&query_vec, 15).await
+                        db.search_hybrid(&query, &query_vec, 15).await
                     },
                     move |result| {
                         Message::SearchResultsLoaded(result.map_err(|e| format!("{e:#}")))

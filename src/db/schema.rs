@@ -38,6 +38,10 @@ const MIGRATIONS: &[&[&str]] = &[
     &[
         "CREATE INDEX IF NOT EXISTS idx_chunks_vec ON chunks(libsql_vector_idx(embedding, 'metric=cosine'))",
     ],
+    // ── v3 (Native Turso Full-Text Search on chunks) ────
+    &[
+        "CREATE INDEX IF NOT EXISTS idx_chunks_fts ON chunks USING fts (content)",
+    ],
 ];
 
 pub async fn migrate(conn: &Connection) -> Result<()> {
@@ -64,13 +68,20 @@ pub async fn migrate(conn: &Connection) -> Result<()> {
         let result: Result<()> = async {
             for sql in statements.iter() {
                 if let Err(e) = conn.execute(sql, ()).await {
-                    // Vector index extension might not be bundled or supported in all libSQL builds.
-                    // Keep it non-fatal so standard tables still mount and work.
                     if sql.contains("libsql_vector_idx") {
-                        eprintln!("Warning: vector index not supported on this libSQL build, skipping: {e:#}");
+                        eprintln!(
+                            "Warning: vector index not supported on this libSQL build: {e:#}"
+                        );
                         continue;
                     }
-                    return Err(e).with_context(|| format!("migration v{version} failed on:\n{sql}"));
+                    if sql.contains("USING fts") {
+                        eprintln!(
+                            "Warning: native FTS index not supported on this build: {e:#}"
+                        );
+                        continue;
+                    }
+                    return Err(e)
+                        .with_context(|| format!("migration v{version} failed on:\n{sql}"));
                 }
             }
             set_meta(conn, "schema_version", &version.to_string()).await

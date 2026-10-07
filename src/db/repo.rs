@@ -190,20 +190,98 @@ pub async fn unindexed_notes(conn: &Connection) -> Result<Vec<(i64, String)>> {
     Ok(results)
 }
 
-pub async fn search_raw(
-    _conn: &Connection,
-    _query_vec: &[f32],
-    _limit: i64,
+/// Lexical search using Turso native full-text search (Tantivy).
+pub async fn search_lexical(
+    conn: &Connection,
+    raw_query: &str,
+    limit: i64,
 ) -> Result<Vec<SearchHit>> {
+    let clean = raw_query.trim();
+    if clean.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sql = "
+        SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at,
+               fts_score(c.content, ?1) AS score
+        FROM chunks c
+        JOIN notes n ON n.id = c.note_id
+        WHERE fts_match(c.content, ?1)
+        ORDER BY score DESC
+        LIMIT ?2
+    ";
+
+    let mut rows = match conn.query(sql, (clean, limit)).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("lexical search query error: {e:#}");
+            return Ok(Vec::new());
+        }
+    };
+
     let mut hits = Vec::new();
-    hits.push(SearchHit {
-        note_id: 1,
-        chunk_index: 1,
-        byte_start: 1,
-        content: "Hello".to_string(),
-        note_created_at: "String".to_string(),
-        distance: 0.3,
-    });
+    while let Some(row) = rows.next().await? {
+        let score: f64 = row.get(5)?;
+        hits.push(SearchHit {
+            note_id: row.get(0)?,
+            chunk_index: row.get(1)?,
+            byte_start: row.get(2)?,
+            content: row.get(3)?,
+            note_created_at: row.get(4)?,
+            // Inverted normalized score for uniform distance handling
+            distance: (1.0 - (score / 10.0)).clamp(0.0, 1.0),
+        });
+    }
+    Ok(hits)
+}
+
+/// Hybrid search combining both BM25 lexical ranking and vector distance,
+/// fused using Reciprocal Rank Fusion (RRF).
+pub async fn search_hybrid(
+    conn: &Connection,
+    raw_query: &str,
+    query_vec: &[f32],
+    limit: i64,
+) -> Result<Vec<SearchHit>> {
+    let candidate_limit = 20.max(limit);
+    let k = 60.0;
+
+    let lex_hits = search_lexical(conn, raw_query, candidate_limit)
+        .await
+        .unwrap_or_default();
+    let sem_hits = search_chunks(conn, query_vec, candidate_limit)
+        .await
+        .unwrap_or_default();
+
+    let mut fused: std::collections::HashMap<(i64, i64), (SearchHit, f64)> =
+        std::collections::HashMap::new();
+
+    for (rank, hit) in lex_hits.into_iter().enumerate() {
+        let key = (hit.note_id, hit.chunk_index);
+        let rrf = 1.0 / (k + (rank as f64 + 1.0));
+        fused.entry(key).or_insert((hit, 0.0)).1 += rrf;
+    }
+
+    for (rank, hit) in sem_hits.into_iter().enumerate() {
+        let key = (hit.note_id, hit.chunk_index);
+        let rrf = 1.0 / (k + (rank as f64 + 1.0));
+        let entry = fused.entry(key).or_insert_with(|| (hit.clone(), 0.0));
+        entry.1 += rrf;
+    }
+
+    let mut results: Vec<(SearchHit, f64)> = fused.into_values().collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let hits = results
+        .into_iter()
+        .take(limit as usize)
+        .map(|(mut hit, score)| {
+            // Distance mapped from RRF score (max theoretical score is ~2 * 1/61 ~= 0.0328)
+            hit.distance = (1.0 - (score * 30.0)).clamp(0.0, 1.0);
+            hit
+        })
+        .collect();
+
     Ok(hits)
 }
 

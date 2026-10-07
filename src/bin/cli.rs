@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
 
             let embedder = Embedder::try_new()?;
             let query_vec = embedder.compute(query)?;
-            let hits = db.search_semantic(&query_vec, limit).await?;
+            let hits = db.search_hybrid(&query, &query_vec, limit).await?;
 
             println!("Query: {query:?}\n");
             for hit in hits {

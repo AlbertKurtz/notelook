@@ -103,3 +103,35 @@ async fn note_hash_matches_behavior() -> Result<()> {
     assert!(db.note_hash_matches(id, &updated_hash).await?);
     Ok(())
 }
+
+#[tokio::test]
+async fn test_hybrid_and_lexical_search() -> Result<()> {
+    let db = Db::open(Path::new(":memory:")).await?;
+    let id = db.insert_note("Rust compiler and tokio runtime").await?;
+
+    let chunk = ChunkRow {
+        index: 0,
+        byte_start: 0,
+        content: "Rust compiler and tokio runtime".to_string(),
+        embedding: vec![0.1; notelook::config::EMBED_DIM],
+    };
+    db.save_chunks(id, &[chunk]).await?;
+
+    // 1. Test lexical search
+    let lex_hits = db.search_lexical("Rust", 5).await?;
+    assert_eq!(lex_hits.len(), 1);
+    assert_eq!(lex_hits[0].note_id, id);
+
+    // 2. Test hybrid search with both query string and vector
+    let query_vec = vec![0.1; notelook::config::EMBED_DIM];
+    let hybrid_hits = db.search_hybrid("Rust", &query_vec, 5).await?;
+    assert_eq!(hybrid_hits.len(), 1);
+    assert_eq!(hybrid_hits[0].note_id, id);
+
+    // 3. Test non-matching lexical query still yields vector result in hybrid search
+    let non_matching = db.search_hybrid("nonexistent_word", &query_vec, 5).await?;
+    assert_eq!(non_matching.len(), 1);
+    assert_eq!(non_matching[0].note_id, id);
+
+    Ok(())
+}

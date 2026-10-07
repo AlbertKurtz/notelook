@@ -20,6 +20,7 @@ impl Db {
     pub async fn open(path: &Path) -> Result<Self> {
         let path_str = path.to_str().context("database path is not valid UTF-8")?;
         let db = Builder::new_local(path_str)
+            .experimental_index_method(true)
             .build()
             .await
             .with_context(|| format!("failed to open database at {path_str}"))?;
@@ -59,12 +60,21 @@ impl Db {
         repo::delete_note(&self.conn, id).await
     }
 
-    pub async fn search_semantic(&self, query_vec: &[f32], limit: i64) -> Result<Vec<SearchHit>> {
-        repo::search_chunks(&self.conn, query_vec, limit).await
+    pub async fn search_hybrid(
+        &self,
+        query: &str,
+        query_vec: &[f32],
+        limit: i64,
+    ) -> Result<Vec<SearchHit>> {
+        repo::search_hybrid(&self.conn, query, query_vec, limit).await
     }
 
-    pub async fn search_lexical(&self, query_vec: &[f32], limit: i64) -> Result<Vec<SearchHit>> {
-        repo::search_raw(&self.conn, query_vec, limit).await
+    pub async fn search_lexical(&self, query: &str, limit: i64) -> Result<Vec<SearchHit>> {
+        repo::search_lexical(&self.conn, query, limit).await
+    }
+
+    pub async fn search_semantic(&self, query_vec: &[f32], limit: i64) -> Result<Vec<SearchHit>> {
+        repo::search_chunks(&self.conn, query_vec, limit).await
     }
 
     pub async fn save_chunks(&self, note_id: i64, chunks: &[ChunkRow]) -> Result<()> {
