@@ -16,18 +16,25 @@ async fn main() -> Result<()> {
             let file = args.get(1).context("usage: cli add <file.md>")?;
             let text =
                 std::fs::read_to_string(file).with_context(|| format!("cannot read {file}"))?;
-            for part in text.split("[***]").map(str::trim).filter(|p| !p.is_empty()) {
-                let id = db.insert_note(part).await?;
-                println!("added note {id}");
+            if text.is_empty() {
+                println!("empty text!");
             }
+
+            let id = db.insert_note(&text).await?;
+            println!("added note {id}");
+
             println!("notes saved: start GUI or run search to query them");
         }
 
         Some("search") => {
-            let query = args.get(1).context("usage: cli search \"<query>\"")?;
+            let query = args
+                .get(1)
+                .context("usage: cli search \"<query>\" [limit]")?;
+            let limit: i64 = args.get(2).and_then(|s| s.parse::<i64>().ok()).unwrap_or(5);
+
             let embedder = Embedder::try_new()?;
             let query_vec = embedder.compute(query)?;
-            let hits = db.search(&query_vec, 5).await?;
+            let hits = db.search_semantic(&query_vec, limit).await?;
 
             println!("Query: {query:?}\n");
             for hit in hits {

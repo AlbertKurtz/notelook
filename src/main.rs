@@ -91,7 +91,7 @@ enum Message {
     Edit(text_editor::Action),
     NewNote,
     SaveNote,
-    NoteSaved(Result<(i64, bool), String>),
+    NoteSaved(Result<(i64, bool, String), String>),
     DeleteNote,
     NoteDeleted(Result<(), String>),
     SearchInputChanged(String),
@@ -286,13 +286,13 @@ impl App {
                                 (id, changed)
                             }
                         };
-                        anyhow::Ok((id, updated)) // <- anyhow::Ok here
+                        anyhow::Ok((id, updated, text_clone))
                     },
                     move |result| Message::NoteSaved(result.map_err(|e| format!("{e:#}"))),
                 )
             }
 
-            Message::NoteSaved(Ok((id, changed))) => {
+            Message::NoteSaved(Ok((id, changed, content))) => {
                 self.saving = false;
                 self.current_note_id = Some(id);
                 self.saved_revision = self.revision;
@@ -307,7 +307,6 @@ impl App {
                     if let (Some(db), Some(emb), Some(chk)) =
                         (self.db.clone(), self.embedder.clone(), self.chunker.clone())
                     {
-                        let content = self.content.text();
                         tokio::spawn(async move {
                             let _ = worker::embed_note(db, emb, chk, id, content).await;
                         });
@@ -401,7 +400,7 @@ impl App {
                         })
                         .await??;
 
-                        db.search(&query_vec, 15).await
+                        db.search_semantic(&query_vec, 15).await
                     },
                     move |result| {
                         Message::SearchResultsLoaded(result.map_err(|e| format!("{e:#}")))

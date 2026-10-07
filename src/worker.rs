@@ -14,16 +14,31 @@ pub async fn embed_note(
     note_id: i64,
     content: String,
 ) -> Result<()> {
-    let pieces = chunker.split(&content);
-    if pieces.is_empty() {
-        return Ok(());
-    }
+    let expected_hash = crate::db::repo::content_hash(&content);
 
-    let texts: Vec<String> = pieces.iter().map(|(_, t)| t.to_string()).collect();
-    let vectors = tokio::task::spawn_blocking(move || -> Result<Vec<Vec<f32>>> {
-        embedder.embed_batch(&texts)
+    let (pieces, vectors) = tokio::task::spawn_blocking(move || -> Result<(Vec<(usize, String)>, Vec<Vec<f32>>)> {
+        let pieces: Vec<(usize, String)> = chunker
+            .split(&content)
+            .into_iter()
+            .map(|(start, t)| (start, t.to_string()))
+            .collect();
+
+        if pieces.is_empty() {
+            return Ok((pieces, Vec::new()));
+        }
+
+        let texts: Vec<&str> = pieces.iter().map(|(_, t)| t.as_str()).collect();
+        let vectors = embedder.embed_batch(&texts)?;
+        Ok((pieces, vectors))
     })
     .await??;
+
+    if pieces.is_empty() {
+        if crate::db::repo::note_hash_matches(db.conn(), note_id, &expected_hash).await? {
+            db.save_chunks(note_id, &[]).await?;
+        }
+        return Ok(());
+    }
 
     let rows: Vec<ChunkRow> = pieces
         .into_iter()
@@ -32,12 +47,15 @@ pub async fn embed_note(
         .map(|(i, ((start, text), embedding))| ChunkRow {
             index: i as i64,
             byte_start: start as i64,
-            content: text.to_string(),
+            content: text,
             embedding,
         })
         .collect();
 
-    db.save_chunks(note_id, &rows).await?;
+    // Only save if the note hasn't been edited again while we were computing embeddings
+    if crate::db::repo::note_hash_matches(db.conn(), note_id, &expected_hash).await? {
+        db.save_chunks(note_id, &rows).await?;
+    }
 
     Ok(())
 }

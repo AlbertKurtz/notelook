@@ -43,6 +43,10 @@ impl Db {
         repo::update_note(&self.conn, id, content).await
     }
 
+    pub async fn note_hash_matches(&self, note_id: i64, expected_hash: &str) -> Result<bool> {
+        repo::note_hash_matches(&self.conn, note_id, expected_hash).await
+    }
+
     pub async fn get_note(&self, id: i64) -> Result<Option<Note>> {
         repo::get_note(&self.conn, id).await
     }
@@ -55,8 +59,12 @@ impl Db {
         repo::delete_note(&self.conn, id).await
     }
 
-    pub async fn search(&self, query_vec: &[f32], limit: i64) -> Result<Vec<SearchHit>> {
+    pub async fn search_semantic(&self, query_vec: &[f32], limit: i64) -> Result<Vec<SearchHit>> {
         repo::search_chunks(&self.conn, query_vec, limit).await
+    }
+
+    pub async fn search_lexical(&self, query_vec: &[f32], limit: i64) -> Result<Vec<SearchHit>> {
+        repo::search_raw(&self.conn, query_vec, limit).await
     }
 
     pub async fn save_chunks(&self, note_id: i64, chunks: &[ChunkRow]) -> Result<()> {

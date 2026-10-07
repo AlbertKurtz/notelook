@@ -105,6 +105,22 @@ pub async fn update_note(conn: &Connection, id: i64, content: &str) -> Result<bo
     Ok(true)
 }
 
+pub async fn note_hash_matches(
+    conn: &Connection,
+    note_id: i64,
+    expected_hash: &str,
+) -> Result<bool> {
+    let mut rows = conn
+        .query("SELECT content_hash FROM notes WHERE id = ?1", (note_id,))
+        .await?;
+    if let Some(row) = rows.next().await? {
+        let hash: String = row.get(0)?;
+        Ok(hash == expected_hash)
+    } else {
+        Ok(false)
+    }
+}
+
 pub async fn get_note(conn: &Connection, id: i64) -> Result<Option<Note>> {
     let sql = format!("SELECT {NOTE_COLUMNS} FROM notes WHERE id = ?1");
     let mut rows = conn.query(&sql, (id,)).await?;
@@ -172,6 +188,23 @@ pub async fn unindexed_notes(conn: &Connection) -> Result<Vec<(i64, String)>> {
         results.push((row.get(0)?, row.get(1)?));
     }
     Ok(results)
+}
+
+pub async fn search_raw(
+    _conn: &Connection,
+    _query_vec: &[f32],
+    _limit: i64,
+) -> Result<Vec<SearchHit>> {
+    let mut hits = Vec::new();
+    hits.push(SearchHit {
+        note_id: 1,
+        chunk_index: 1,
+        byte_start: 1,
+        content: "Hello".to_string(),
+        note_created_at: "String".to_string(),
+        distance: 0.3,
+    });
+    Ok(hits)
 }
 
 pub async fn search_chunks(

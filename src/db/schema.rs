@@ -32,6 +32,11 @@ const MIGRATIONS: &[&[&str]] = &[
             UNIQUE(note_id, chunk_index)
         )",
         "CREATE INDEX IF NOT EXISTS idx_chunks_note_id ON chunks(note_id)",
+        "CREATE INDEX IF NOT EXISTS idx_chunks_vec ON chunks(libsql_vector_idx(embedding, 'metric=cosine'))",
+    ],
+    // ── v2 (vector index for databases created under v1) ─
+    &[
+        "CREATE INDEX IF NOT EXISTS idx_chunks_vec ON chunks(libsql_vector_idx(embedding, 'metric=cosine'))",
     ],
 ];
 
@@ -58,9 +63,15 @@ pub async fn migrate(conn: &Connection) -> Result<()> {
         conn.execute("BEGIN", ()).await?;
         let result: Result<()> = async {
             for sql in statements.iter() {
-                conn.execute(sql, ())
-                    .await
-                    .with_context(|| format!("migration v{version} failed on:\n{sql}"))?;
+                if let Err(e) = conn.execute(sql, ()).await {
+                    // Vector index extension might not be bundled or supported in all libSQL builds.
+                    // Keep it non-fatal so standard tables still mount and work.
+                    if sql.contains("libsql_vector_idx") {
+                        eprintln!("Warning: vector index not supported on this libSQL build, skipping: {e:#}");
+                        continue;
+                    }
+                    return Err(e).with_context(|| format!("migration v{version} failed on:\n{sql}"));
+                }
             }
             set_meta(conn, "schema_version", &version.to_string()).await
         }

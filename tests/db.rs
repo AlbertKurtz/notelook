@@ -52,7 +52,7 @@ async fn delete_cascades_to_chunks() -> Result<()> {
 
     // Search returns our chunk
     let hits = db
-        .search(&vec![0.1; notelook::config::EMBED_DIM], 5)
+        .search_semantic(&vec![0.1; notelook::config::EMBED_DIM], 5)
         .await?;
     assert_eq!(hits.len(), 2);
 
@@ -61,7 +61,7 @@ async fn delete_cascades_to_chunks() -> Result<()> {
 
     // Chunks are gone due to ON DELETE CASCADE
     let hits_after = db
-        .search(&vec![0.1; notelook::config::EMBED_DIM], 5)
+        .search_semantic(&vec![0.1; notelook::config::EMBED_DIM], 5)
         .await?;
     assert_eq!(hits_after.len(), 0);
     Ok(())
@@ -80,5 +80,26 @@ async fn unindexed_notes_detection() -> Result<()> {
     let unindexed = db.unindexed_notes().await?;
     assert_eq!(unindexed.len(), 1);
     assert_eq!(unindexed[0].0, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn note_hash_matches_behavior() -> Result<()> {
+    let db = Db::open(Path::new(":memory:")).await?;
+    let initial_content = "Hello world";
+    let id = db.insert_note(initial_content).await?;
+
+    let initial_hash = notelook::db::repo::content_hash(initial_content);
+    let wrong_hash = notelook::db::repo::content_hash("Different text");
+
+    assert!(db.note_hash_matches(id, &initial_hash).await?);
+    assert!(!db.note_hash_matches(id, &wrong_hash).await?);
+    assert!(!db.note_hash_matches(999, &initial_hash).await?);
+
+    db.update_note(id, "Updated text").await?;
+    let updated_hash = notelook::db::repo::content_hash("Updated text");
+
+    assert!(!db.note_hash_matches(id, &initial_hash).await?);
+    assert!(db.note_hash_matches(id, &updated_hash).await?);
     Ok(())
 }
