@@ -114,7 +114,15 @@ NoteLook is a simple project bringing together three core goals:
 <!-- GETTING STARTED -->
 ## Getting Started
 
-### Prerequisites
+### Install the Executable
+Download Pre-built Binaries at [Release](https://github.com/AlbertKurtz/notelook/releases)
+
+- Windows (.zip)
+- Linux (.tar.gz)
+- macOS (.tar.gz)
+
+### Install from source
+#### Prerequisites
 
 * **Rust Toolchain**: Stable Rust (edition 2021 or newer).
   ```sh
@@ -123,7 +131,7 @@ NoteLook is a simple project bringing together three core goals:
 * **Git**: To clone the repository.
 * *Note*: On the first run, NoteLook downloads the `all-MiniLM-L6-v2` model weights (~90MB) from Hugging Face into your local cache directory. Subsequent runs operate completely offline.
 
-### Installation
+#### Installation
 
 1. Clone the repository:
    ```sh
@@ -150,6 +158,8 @@ Launch the desktop interface:
 ```sh
 cargo run --release --bin notelook
 ```
+
+or the executable.
 
 * **Sidebar**: View your recent notes, sorted by last update. Active notes display an accent indicator.
 * **Editor**: Live line and character counts with dirty-buffer tracking.
