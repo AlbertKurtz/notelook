@@ -16,7 +16,7 @@
     <img src="assets/logo.png" alt="NoteLook Logo">
   </a>
 
-<h3 align="center">NoteLook</h3>
+<h1 align="center">NoteLook</h3>
 
   <p align="center">
     A lightweight, portable note-taking app with semantic memory and hybrid search.

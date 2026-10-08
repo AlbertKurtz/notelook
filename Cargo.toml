@@ -5,6 +5,7 @@ edition = "2024"
 description = "Lightweight yet powerful notepad app"
 default-run = "notelook"
 authors = ["Alberto Flor"]
+email = "albert.flor.mail@gmail.com"
 license = "MIT"
 
 [dependencies]
