@@ -2,9 +2,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
-use hf_hub::api::sync::Api;
 use std::fmt;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
 
@@ -15,7 +13,6 @@ use crate::config::{EMBED_DIM, EMBED_MAX_TOKENS, EMBED_MODEL_ID};
 pub struct Embedder {
     model: Arc<BertModel>,
     tokenizer: Arc<Tokenizer>,
-    tokenizer_path: PathBuf,
     device: Device,
 }
 impl fmt::Debug for Embedder {
@@ -26,25 +23,18 @@ impl fmt::Debug for Embedder {
     }
 }
 
+const CONFIG_BYTES: &[u8] = include_bytes!("../assets/model/config.json");
+const TOKENIZER_BYTES: &[u8] = include_bytes!("../assets/model/tokenizer.json");
+const WEIGHTS_BYTES: &[u8] = include_bytes!("../assets/model/model.safetensors");
+
 impl Embedder {
     pub fn try_new() -> Result<Self> {
         let device = Device::Cpu;
-        let api = Api::new().context("Failed to initialize Hugging Face Api client")?;
-        let repo = api.model(EMBED_MODEL_ID.to_string());
 
-        let config_path = repo
-            .get("config.json")
-            .context("failed to get config.json")?;
-        let tokenizer_path = repo
-            .get("tokenizer.json")
-            .context("failed to get tokenizer.json")?;
-        let weights_path = repo
-            .get("model.safetensors")
-            .context("failed to get model.safetensors")?;
+        let config: Config = serde_json::from_slice(CONFIG_BYTES)?;
 
-        let config: Config = serde_json::from_str(&std::fs::read_to_string(&config_path)?)?;
-
-        let mut tokenizer = Tokenizer::from_file(&tokenizer_path).map_err(|e| anyhow!("{e}"))?;
+        let mut tokenizer =
+            Tokenizer::from_bytes(TOKENIZER_BYTES).map_err(|e| anyhow!("{e}"))?;
         tokenizer.with_padding(Some(PaddingParams {
             strategy: tokenizers::PaddingStrategy::BatchLongest,
             ..Default::default()
@@ -56,14 +46,12 @@ impl Embedder {
             }))
             .map_err(|e| anyhow!("{e}"))?;
 
-        let vb =
-            unsafe { VarBuilder::from_mmaped_safetensors(&[weights_path], DType::F32, &device)? };
+        let vb = VarBuilder::from_slice_safetensors(WEIGHTS_BYTES, DType::F32, &device)?;
         let model = BertModel::load(vb, &config)?;
 
         let embedder = Self {
             model: Arc::new(model),
             tokenizer: Arc::new(tokenizer),
-            tokenizer_path,
             device,
         };
 
@@ -82,8 +70,7 @@ impl Embedder {
     }
 
     pub fn chunker(&self, max_tokens: usize, overlap: usize) -> Result<Chunker> {
-        let tokenizer = Tokenizer::from_file(&self.tokenizer_path).map_err(|e| anyhow!("{e}"))?;
-        Chunker::new(tokenizer, max_tokens, overlap)
+        Chunker::new((*self.tokenizer).clone(), max_tokens, overlap)
     }
 
     pub fn compute(&self, text: &str) -> Result<Vec<f32>> {

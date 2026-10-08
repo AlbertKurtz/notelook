@@ -4,8 +4,7 @@ version = "0.1.1"
 edition = "2024"
 description = "Lightweight yet powerful notepad app"
 default-run = "notelook"
-authors = ["Alberto Flor"]
-email = "albert.flor.mail@gmail.com"
+authors = ["Alberto Flor <albert.flor.mail@gmail.com>"]
 license = "MIT"
 
 [dependencies]
@@ -24,3 +23,7 @@ tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 
 tokio = { version = "1.53.1", features = ["full", "macros", "rt-multi-thread"] }
 turso = "0.8.1"
+
+[build-dependencies]
+anyhow = "1.0"
+hf-hub = "0.4"
