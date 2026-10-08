@@ -37,24 +37,56 @@ fn main() -> Result<()> {
 
     if !weights_exist || current_marker.trim() != model_id.trim() {
         println!("cargo:warning=Syncing model '{model_id}' from Hugging Face into assets/model/...");
-        let api = Api::new().context("failed to initialize hf-hub Api client")?;
-        let repo = api.model(model_id.clone());
 
-        let cfg = repo
-            .get("config.json")
-            .with_context(|| format!("failed to fetch config.json for {model_id}"))?;
-        let tok = repo
-            .get("tokenizer.json")
-            .with_context(|| format!("failed to fetch tokenizer.json for {model_id}"))?;
-        let wgt = repo
-            .get("model.safetensors")
-            .with_context(|| format!("failed to fetch model.safetensors for {model_id}"))?;
+        fetch_file(&model_id, "config.json", &model_dir.join("config.json"))?;
+        fetch_file(&model_id, "tokenizer.json", &model_dir.join("tokenizer.json"))?;
+        fetch_file(&model_id, "model.safetensors", &model_dir.join("model.safetensors"))?;
 
-        fs::copy(cfg, model_dir.join("config.json"))?;
-        fs::copy(tok, model_dir.join("tokenizer.json"))?;
-        fs::copy(wgt, model_dir.join("model.safetensors"))?;
         fs::write(&marker_path, &model_id)?;
         println!("cargo:warning=Successfully bundled model '{model_id}' into assets/model/");
+    }
+
+    Ok(())
+}
+
+fn fetch_file(model_id: &str, filename: &str, dest: &Path) -> Result<()> {
+    // 1. Try hf-hub first
+    if let Ok(api) = Api::new() {
+        let repo = api.model(model_id.to_string());
+        if let Ok(src) = repo.get(filename) {
+            fs::copy(src, dest)?;
+            return Ok(());
+        }
+    }
+
+    // 2. Fallback to system curl (handles corporate proxies, VPNs, and --ssl-no-revoke)
+    println!("cargo:warning=hf-hub TLS failed for {filename}; falling back to system curl...");
+    let url = format!("https://huggingface.co/{model_id}/resolve/main/{filename}");
+
+    #[cfg(windows)]
+    let mut cmd = std::process::Command::new("curl.exe");
+    #[cfg(not(windows))]
+    let mut cmd = std::process::Command::new("curl");
+
+    cmd.args(["-f", "-L"]);
+    #[cfg(windows)]
+    cmd.arg("--ssl-no-revoke");
+    cmd.arg("-o");
+    cmd.arg(dest);
+    cmd.arg(&url);
+
+    let status = cmd.status().with_context(|| format!("failed to run curl for {url}"))?;
+    if !status.success() {
+        // Retry with -k if corporate SSL interception certificate is unknown
+        let mut retry_cmd = std::process::Command::new(if cfg!(windows) { "curl.exe" } else { "curl" });
+        retry_cmd.args(["-f", "-L", "-k", "-o"]);
+        retry_cmd.arg(dest);
+        retry_cmd.arg(&url);
+        let retry_status = retry_cmd.status().with_context(|| format!("curl fallback failed for {url}"))?;
+        anyhow::ensure!(
+            retry_status.success(),
+            "failed to download {filename} from {url} via both hf-hub and curl"
+        );
     }
 
     Ok(())

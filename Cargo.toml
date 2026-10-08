@@ -27,3 +27,11 @@ turso = "0.8.1"
 [build-dependencies]
 anyhow = "1.0"
 hf-hub = "0.4"
+
+# Reduce debug symbol size for faster builds and much smaller disk usage
+[profile.dev]
+debug = 1 # Line tables only (keeps backtraces/line numbers, cuts 70% of PDB size)
+
+# Compile external dependencies without debug symbols
+[profile.dev.package."*"]
+debug = false

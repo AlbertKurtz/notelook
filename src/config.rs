@@ -4,7 +4,7 @@ use std::path::PathBuf;
 pub const APP_NAME: &str = "notelook";
 
 /// Hugging Face model id. Changing it triggers a full re-embed (see worker.rs).
-pub const EMBED_MODEL_ID: &str = "sentence-transformers/all-MiniLM-L6-v2";
+pub const EMBED_MODEL_ID: &str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2";
 
 /// Must match `F32_BLOB(...)` in db/schema.rs. Checked at model load.
 pub const EMBED_DIM: usize = 384;
