@@ -28,4 +28,6 @@ target
 *.db-wal
 *.db-shm
 /target
-codefetch/codefetch/codefetch.md
+codefetch
+
+.idea
