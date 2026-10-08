@@ -25,14 +25,30 @@ fn main() -> Result<()> {
         && model_dir.join("tokenizer.json").exists()
         && model_dir.join("model.safetensors").exists();
 
+    if std::env::var("NOTELOOK_SKIP_MODEL_DOWNLOAD")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+    {
+        if !weights_exist {
+            println!("cargo:warning=NOTELOOK_SKIP_MODEL_DOWNLOAD is set, but assets/model/ is missing weights!");
+        }
+        return Ok(());
+    }
+
     if !weights_exist || current_marker.trim() != model_id.trim() {
         println!("cargo:warning=Syncing model '{model_id}' from Hugging Face into assets/model/...");
         let api = Api::new().context("failed to initialize hf-hub Api client")?;
         let repo = api.model(model_id.clone());
 
-        let cfg = repo.get("config.json").context("failed to fetch config.json")?;
-        let tok = repo.get("tokenizer.json").context("failed to fetch tokenizer.json")?;
-        let wgt = repo.get("model.safetensors").context("failed to fetch model.safetensors")?;
+        let cfg = repo
+            .get("config.json")
+            .with_context(|| format!("failed to fetch config.json for {model_id}"))?;
+        let tok = repo
+            .get("tokenizer.json")
+            .with_context(|| format!("failed to fetch tokenizer.json for {model_id}"))?;
+        let wgt = repo
+            .get("model.safetensors")
+            .with_context(|| format!("failed to fetch model.safetensors for {model_id}"))?;
 
         fs::copy(cfg, model_dir.join("config.json"))?;
         fs::copy(tok, model_dir.join("tokenizer.json"))?;

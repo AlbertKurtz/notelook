@@ -84,6 +84,20 @@ impl Embedder {
             return Ok(Vec::new());
         }
 
+        const MAX_BATCH_SIZE: usize = 16;
+        if sentence.len() > MAX_BATCH_SIZE {
+            let mut all_results = Vec::with_capacity(sentence.len());
+            for chunk in sentence.chunks(MAX_BATCH_SIZE) {
+                let sub_results = self.embed_sub_batch(chunk)?;
+                all_results.extend(sub_results);
+            }
+            return Ok(all_results);
+        }
+
+        self.embed_sub_batch(sentence)
+    }
+
+    fn embed_sub_batch<S: AsRef<str>>(&self, sentence: &[S]) -> Result<Vec<Vec<f32>>> {
         let sentence_strs: Vec<&str> = sentence.iter().map(|s| s.as_ref()).collect();
         let encodings = self
             .tokenizer
@@ -100,7 +114,7 @@ impl Embedder {
 
         let input_ids = to_tensor(&|e| e.get_ids())?; //             [b, s]
         let token_type_ids = to_tensor(&|e| e.get_type_ids())?; //   [b, s]
-        let attention_mask = to_tensor(&|e| e.get_attention_mask())?.to_dtype(DType::F32)?; //                               [b, s]
+        let attention_mask = to_tensor(&|e| e.get_attention_mask())?.to_dtype(DType::F32)?; // [b, s]
 
         let ys = self
             .model

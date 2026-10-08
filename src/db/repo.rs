@@ -201,7 +201,7 @@ pub async fn search_lexical(
         return Ok(Vec::new());
     }
 
-    let sql = "
+    let fts_sql = "
         SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at,
                fts_score(c.content, ?1) AS score
         FROM chunks c
@@ -211,25 +211,45 @@ pub async fn search_lexical(
         LIMIT ?2
     ";
 
-    let mut rows = match conn.query(sql, (clean, limit)).await {
-        Ok(r) => r,
+    let (mut rows, is_fallback) = match conn.query(fts_sql, (clean, limit)).await {
+        Ok(r) => (r, false),
         Err(e) => {
-            eprintln!("lexical search query error: {e:#}");
-            return Ok(Vec::new());
+            eprintln!("Warning: native FTS search failed ({e:#}), falling back to LIKE search");
+            let pattern = format!("%{clean}%");
+            let fallback_sql = "
+                SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at,
+                       5.0 AS score
+                FROM chunks c
+                JOIN notes n ON n.id = c.note_id
+                WHERE c.content LIKE ?1
+                ORDER BY n.updated_at DESC
+                LIMIT ?2
+            ";
+            match conn.query(fallback_sql, (pattern.as_str(), limit)).await {
+                Ok(r) => (r, true),
+                Err(err) => {
+                    eprintln!("lexical fallback search error: {err:#}");
+                    return Ok(Vec::new());
+                }
+            }
         }
     };
 
     let mut hits = Vec::new();
     while let Some(row) = rows.next().await? {
         let score: f64 = row.get(5)?;
+        let distance = if is_fallback {
+            0.5
+        } else {
+            (1.0 - (score / 10.0)).clamp(0.0, 1.0)
+        };
         hits.push(SearchHit {
             note_id: row.get(0)?,
             chunk_index: row.get(1)?,
             byte_start: row.get(2)?,
             content: row.get(3)?,
             note_created_at: row.get(4)?,
-            // Inverted normalized score for uniform distance handling
-            distance: (1.0 - (score / 10.0)).clamp(0.0, 1.0),
+            distance,
         });
     }
     Ok(hits)
