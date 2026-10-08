@@ -1,10 +1,11 @@
 [package]
 name = "notelook"
 version = "0.1.1"
-# authors = "Alberto Flor"
 edition = "2024"
 description = "Lightweight yet powerful notepad app"
 default-run = "notelook"
+authors = ["Alberto Flor"]
+license = "MIT"
 
 [dependencies]
 anyhow = "1.0.104"

@@ -5,7 +5,7 @@
 [![Forks][forks-shield]][forks-url]
 [![Stargazers][stars-shield]][stars-url]
 [![Issues][issues-shield]][issues-url]
-[![Unlicense License][license-shield]][license-url]
+[![MIT License][license-shield]][license-url]
 
 
 
@@ -263,7 +263,7 @@ Contributions and feedback are welcome. If you have an idea or encounter an issu
 <!-- LICENSE -->
 ## License
 
-Distributed under the Unlicense License. See `LICENSE` for details.
+Distributed under the MIT License. See `LICENSE` for more information.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -299,8 +299,8 @@ Project Link: [https://github.com/AlbertKurtz/notelook](https://github.com/Alber
 [stars-url]: https://github.com/AlbertKurtz/notelook/stargazers
 [issues-shield]: https://img.shields.io/github/issues/AlbertKurtz/notelook.svg?style=for-the-badge
 [issues-url]: https://github.com/AlbertKurtz/notelook/issues
-[license-shield]: https://img.shields.io/badge/License-Unlicense-blue.svg?style=for-the-badge
-[license-url]: https://unlicense.org/
+[license-shield]: https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge
+[license-url]: https://opensource.org/licenses/MIT
 
 [Rust-shield]: https://img.shields.io/badge/Rust-000000?style=for-the-badge&logo=rust&logoColor=white
 [Rust-url]: https://www.rust-lang.org/
