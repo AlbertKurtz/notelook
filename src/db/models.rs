@@ -41,30 +41,20 @@ impl SearchHit {
     /// Similarity percentage (100% is identical).
     /// Calibrated similarity percentage with baseline noise cutoff.
     /// If we do not subtract floor uncorrelated results will score 40% anyway in hybrid
-        pub fn similarity_percent(&self) -> f64 {
-            let raw_sim = (1.0 - self.distance).clamp(0.0, 1.0); // <- this is standard
-    
-            // Baseline noise floor for paraphrase-multilingual-MiniLM-L12-v2
-            // the 0.4 is a bit of a magic number, should be tuned or extracted as config
-            let floor = if self.lexical_matched { 0.25 } else { 0.40 };
+    pub fn similarity_percent(&self) -> f64 {
+        let raw_sim = (1.0 - self.distance).clamp(0.0, 1.0); // <- this is standard
 
-            // clamp
-            if raw_sim <= floor {
-                return 0.0;
-            }
-    
-            // Rescale [floor, 1.0] -> [0%, 100%]
-            let scaled = (raw_sim - floor) / (1.0 - floor) * 100.0;
-    
-            // Give a confidence boost if both lexical and semantic match
-            let boosted = if self.lexical_matched && raw_sim > 0.45 {
-                scaled * 1.15
-            } else {
-                scaled
-            };
-    
-            boosted.clamp(0.0, 100.0)
+        // If there's an exact lexical match baseline boosted
+        if self.lexical_matched {
+            let boosted = (raw_sim * 0.7 + 0.3) * 100.0;
+            return boosted.clamp(0.0, 100.0);
         }
+
+        // suppress random noise (< 0.25) with magic numers :-(
+        // preserving decent hits (0.30 - 0.45) at realistic scores (15% - 35%)
+        let score = (raw_sim.powf(1.6) * 100.0).clamp(0.0, 100.0);
+        score
+    }
 }
 
 /// A chunk ready to be written into the `chunks` table.

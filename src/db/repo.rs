@@ -334,14 +334,14 @@ pub async fn search_hybrid(
     let mut fused: std::collections::HashMap<(i64, i64), (SearchHit, f64)> =
         std::collections::HashMap::new();
 
-    // semantic, but keeps the distance (correct stuff, not this rrf magic)
+    // 1. Semantic hits (preserves true cosine distance)
     for (rank, hit) in sem_hits.into_iter().enumerate() {
         let key = (hit.note_id, hit.chunk_index);
         let rrf = 1.0 / (k + (rank as f64 + 1.0));
         fused.insert(key, (hit, rrf));
     }
 
-    // Mix them into one new score
+    // 2. Blend Lexical hits
     for (rank, lex_hit) in lex_hits.into_iter().enumerate() {
         let key = (lex_hit.note_id, lex_hit.chunk_index);
         let rrf = 1.0 / (k + (rank as f64 + 1.0));
@@ -350,26 +350,28 @@ pub async fn search_hybrid(
             existing_hit.lexical_matched = true;
             *existing_score += rrf;
         } else {
-            // Chunk matched by keyword only (not in semantic top-K)
             let mut hit = lex_hit;
             hit.lexical_matched = true;
             fused.insert(key, (hit, rrf));
         }
     }
 
-    // use rrf for sorting
-    let mut results: Vec<(SearchHit, f64)> = fused.into_values().collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let hits: Vec<SearchHit> = results
-        .into_iter()
+    // 3. Attach RRF score without dropping soft matches
+    let mut hits: Vec<SearchHit> = fused
+        .into_values()
         .map(|(mut hit, rrf)| {
             hit.rrf_score = rrf;
             hit
         })
-        .filter(|hit| hit.similarity_percent() > 0.0)
-        .take(limit as usize)
         .collect();
 
+    // 4. Sort strictly by calibrated similarity percentage descending
+    hits.sort_by(|a, b| {
+        b.similarity_percent()
+            .partial_cmp(&a.similarity_percent())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    hits.truncate(limit as usize);
     Ok(hits)
 }
