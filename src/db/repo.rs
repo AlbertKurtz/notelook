@@ -214,18 +214,35 @@ pub async fn search_lexical(
     let (mut rows, is_fallback) = match conn.query(fts_sql, (clean, limit)).await {
         Ok(r) => (r, false),
         Err(e) => {
-            eprintln!("Warning: native FTS search failed ({e:#}), falling back to LIKE search");
-            let pattern = format!("%{clean}%");
-            let fallback_sql = "
-                SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at,
-                       5.0 AS score
-                FROM chunks c
-                JOIN notes n ON n.id = c.note_id
-                WHERE c.content LIKE ?1
-                ORDER BY n.updated_at DESC
-                LIMIT ?2
-            ";
-            match conn.query(fallback_sql, (pattern.as_str(), limit)).await {
+            // Token-based fallback when Tantivy FTS is unavailable
+            // Homemade receipe ;-)
+            let tokens: Vec<&str> = clean.split_whitespace().filter(|t| !t.is_empty()).collect();
+
+            if tokens.is_empty() {
+                return Ok(Vec::new());
+            }
+
+            let conditions: Vec<String> = (1..=tokens.len())
+                .map(|i| format!("c.content LIKE ?{i}"))
+                .collect();
+            let where_clause = conditions.join(" OR ");
+
+            let fallback_sql = format!(
+                            "SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at, 1.0 AS score
+                             FROM chunks c
+                             JOIN notes n ON n.id = c.note_id
+                             WHERE {where_clause}
+                             ORDER BY n.updated_at DESC
+                             LIMIT ?{}",
+                            tokens.len() + 1
+                        );
+
+            let mut params: Vec<turso::Value> = tokens
+                .into_iter()
+                .map(|t| format!("%{t}%").into())
+                .collect();
+            params.push(limit.into());
+            match conn.query(&fallback_sql, params).await {
                 Ok(r) => (r, true),
                 Err(err) => {
                     eprintln!("lexical fallback search error: {err:#}");
@@ -239,10 +256,11 @@ pub async fn search_lexical(
     while let Some(row) = rows.next().await? {
         let score: f64 = row.get(5)?;
         let distance = if is_fallback {
-            0.5
+            0.35 // Plausible lexical baseline distance, MAGIC NUMBER
         } else {
             (1.0 - (score / 10.0)).clamp(0.0, 1.0)
         };
+
         hits.push(SearchHit {
             note_id: row.get(0)?,
             chunk_index: row.get(1)?,
@@ -250,61 +268,14 @@ pub async fn search_lexical(
             content: row.get(3)?,
             note_created_at: row.get(4)?,
             distance,
+            lexical_matched: true,
+            rrf_score: 0.0,
         });
     }
     Ok(hits)
 }
 
-/// Hybrid search combining both BM25 lexical ranking and vector distance,
-/// fused using Reciprocal Rank Fusion (RRF).
-pub async fn search_hybrid(
-    conn: &Connection,
-    raw_query: &str,
-    query_vec: &[f32],
-    limit: i64,
-) -> Result<Vec<SearchHit>> {
-    let candidate_limit = 20.max(limit);
-    let k = 60.0;
-
-    let lex_hits = search_lexical(conn, raw_query, candidate_limit)
-        .await
-        .unwrap_or_default();
-    let sem_hits = search_chunks(conn, query_vec, candidate_limit)
-        .await
-        .unwrap_or_default();
-
-    let mut fused: std::collections::HashMap<(i64, i64), (SearchHit, f64)> =
-        std::collections::HashMap::new();
-
-    for (rank, hit) in lex_hits.into_iter().enumerate() {
-        let key = (hit.note_id, hit.chunk_index);
-        let rrf = 1.0 / (k + (rank as f64 + 1.0));
-        fused.entry(key).or_insert((hit, 0.0)).1 += rrf;
-    }
-
-    for (rank, hit) in sem_hits.into_iter().enumerate() {
-        let key = (hit.note_id, hit.chunk_index);
-        let rrf = 1.0 / (k + (rank as f64 + 1.0));
-        let entry = fused.entry(key).or_insert_with(|| (hit.clone(), 0.0));
-        entry.1 += rrf;
-    }
-
-    let mut results: Vec<(SearchHit, f64)> = fused.into_values().collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    let hits = results
-        .into_iter()
-        .take(limit as usize)
-        .map(|(mut hit, score)| {
-            // Distance mapped from RRF score (max theoretical score is ~2 * 1/61 ~= 0.0328)
-            hit.distance = (1.0 - (score * 30.0)).clamp(0.0, 1.0);
-            hit
-        })
-        .collect();
-
-    Ok(hits)
-}
-
+/// Clean semantic search
 pub async fn search_chunks(
     conn: &Connection,
     query_vec: &[f32],
@@ -333,7 +304,72 @@ pub async fn search_chunks(
             content: row.get(3)?,
             note_created_at: row.get(4)?,
             distance: row.get(5)?,
+            lexical_matched: false,
+            rrf_score: 0.0,
         });
     }
+    Ok(hits)
+}
+
+/// Hybrid search combining both BM25 lexical ranking and vector distance,
+/// fused using Reciprocal Rank Fusion (RRF).
+pub async fn search_hybrid(
+    conn: &Connection,
+    raw_query: &str,
+    query_vec: &[f32],
+    limit: i64,
+) -> Result<Vec<SearchHit>> {
+    let candidate_limit = 25.max(limit);
+    let k = 60.0;
+
+    let (lex_hits, sem_hits) = tokio::join!(
+        search_lexical(conn, raw_query, candidate_limit),
+        search_chunks(conn, query_vec, candidate_limit)
+    );
+
+    let lex_hits = lex_hits.unwrap_or_default();
+    let sem_hits = sem_hits.unwrap_or_default();
+
+    // Map by (note_id, chunk_index) -> (Merged SearchHit, RRF Score)
+    let mut fused: std::collections::HashMap<(i64, i64), (SearchHit, f64)> =
+        std::collections::HashMap::new();
+
+    // semantic, but keeps the distance (correct stuff, not this rrf magic)
+    for (rank, hit) in sem_hits.into_iter().enumerate() {
+        let key = (hit.note_id, hit.chunk_index);
+        let rrf = 1.0 / (k + (rank as f64 + 1.0));
+        fused.insert(key, (hit, rrf));
+    }
+
+    // Mix them into one new score
+    for (rank, lex_hit) in lex_hits.into_iter().enumerate() {
+        let key = (lex_hit.note_id, lex_hit.chunk_index);
+        let rrf = 1.0 / (k + (rank as f64 + 1.0));
+
+        if let Some((existing_hit, existing_score)) = fused.get_mut(&key) {
+            existing_hit.lexical_matched = true;
+            *existing_score += rrf;
+        } else {
+            // Chunk matched by keyword only (not in semantic top-K)
+            let mut hit = lex_hit;
+            hit.lexical_matched = true;
+            fused.insert(key, (hit, rrf));
+        }
+    }
+
+    // use rrf for sorting
+    let mut results: Vec<(SearchHit, f64)> = fused.into_values().collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let hits: Vec<SearchHit> = results
+        .into_iter()
+        .map(|(mut hit, rrf)| {
+            hit.rrf_score = rrf;
+            hit
+        })
+        .filter(|hit| hit.similarity_percent() > 0.0)
+        .take(limit as usize)
+        .collect();
+
     Ok(hits)
 }

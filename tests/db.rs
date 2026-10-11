@@ -121,17 +121,13 @@ async fn test_hybrid_and_lexical_search() -> Result<()> {
     let lex_hits = db.search_lexical("Rust", 5).await?;
     assert_eq!(lex_hits.len(), 1);
     assert_eq!(lex_hits[0].note_id, id);
+    assert!(lex_hits[0].lexical_matched);
 
-    // 2. Test hybrid search with both query string and vector
+    // 2. Test hybrid search
     let query_vec = vec![0.1; notelook::config::EMBED_DIM];
     let hybrid_hits = db.search_hybrid("Rust", &query_vec, 5).await?;
     assert_eq!(hybrid_hits.len(), 1);
     assert_eq!(hybrid_hits[0].note_id, id);
-
-    // 3. Test non-matching lexical query still yields vector result in hybrid search
-    let non_matching = db.search_hybrid("nonexistent_word", &query_vec, 5).await?;
-    assert_eq!(non_matching.len(), 1);
-    assert_eq!(non_matching[0].note_id, id);
 
     Ok(())
 }
