@@ -44,6 +44,13 @@ fn theme(_state: &App) -> Theme {
 // ─── state ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchSort {
+    Similarity,
+    RrfRank,
+    Date,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModelState {
     Loading,
     Ready,
@@ -70,6 +77,7 @@ struct App {
     search_query: String,
     search_results: Vec<SearchHit>,
     is_searching: bool,
+    search_sort: SearchSort,
 }
 
 impl App {
@@ -98,6 +106,7 @@ enum Message {
     SearchInputChanged(String),
     PerformSearch,
     SearchResultsLoaded(Result<Vec<SearchHit>, String>),
+    SetSearchSort(SearchSort),
     ClearSearch,
     Quit,
 }
@@ -135,6 +144,7 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
             is_searching: false,
+            search_sort: SearchSort::Similarity,
         };
 
         let task = Task::perform(
@@ -418,7 +428,10 @@ impl App {
                 self.status = format!("Search error: {e}");
                 Task::none()
             }
-
+            Message::SetSearchSort(sort) => {
+                self.search_sort = sort;
+                Task::none()
+            }
             Message::ClearSearch => {
                 self.search_query.clear();
                 self.search_results.clear();
@@ -469,19 +482,71 @@ impl App {
                     .padding(16)
                     .into()
             } else {
-                let items: Vec<Element<'_, Message>> = self
-                    .search_results
+                // 1. Sort controls header
+                let sort_btn = |label: &'static str, target: SearchSort, current: SearchSort| {
+                    let is_active = target == current;
+                    button(text(label).size(11))
+                        .on_press(Message::SetSearchSort(target))
+                        .padding([3, 7])
+                        .style(move |theme, status| {
+                            let mut style = button::secondary(theme, status);
+                            if is_active {
+                                style.border = Border {
+                                    color: Color::from_rgb(0.4, 0.6, 1.0),
+                                    width: 1.0,
+                                    radius: 3.0.into(),
+                                };
+                            }
+                            style
+                        })
+                };
+
+                let sort_controls = row![
+                    text("Sort:").size(11),
+                    space::horizontal(),
+                    sort_btn("% Match", SearchSort::Similarity, self.search_sort),
+                    sort_btn("RRF Rank", SearchSort::RrfRank, self.search_sort),
+                    sort_btn("Recent", SearchSort::Date, self.search_sort),
+                ]
+                .align_y(Alignment::Center)
+                .spacing(4);
+
+                // 2. Clone and sort hits based on the current selection
+                let mut sorted_hits = self.search_results.clone();
+                match self.search_sort {
+                    SearchSort::Similarity => {
+                        sorted_hits.sort_by(|a, b| {
+                            b.similarity_percent()
+                                .partial_cmp(&a.similarity_percent())
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                    }
+                    SearchSort::RrfRank => {
+                        sorted_hits.sort_by(|a, b| {
+                            b.rrf_score
+                                .partial_cmp(&a.rrf_score)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                    }
+                    SearchSort::Date => {
+                        sorted_hits.sort_by(|a, b| b.note_created_at.cmp(&a.note_created_at));
+                    }
+                }
+
+                // 3. Render items
+                let items: Vec<Element<'_, Message>> = sorted_hits
                     .iter()
                     .map(|hit| {
                         let preview: String = hit.content.chars().take(80).collect();
-                        let sim_badge = format!("{:.0}% match", hit.similarity_percent());
+                        let sim_badge = format!("{:.0}%", hit.similarity_percent());
+                        let lex_indicator = if hit.lexical_matched { " [text]" } else { "" };
 
                         button(
                             column![
                                 row![
-                                    text(format!("Note {}", hit.note_id)).size(13),
+                                    text(format!("Note {}{}", hit.note_id, lex_indicator)).size(12),
                                     space::horizontal(),
-                                    text(sim_badge).size(12),
+                                    text(sim_badge).size(11),
                                 ],
                                 text(preview).size(12),
                             ]
@@ -494,7 +559,13 @@ impl App {
                     })
                     .collect();
 
-                scrollable(column(items).spacing(6)).height(Fill).into()
+                column![
+                    sort_controls,
+                    scrollable(column(items).spacing(6)).height(Fill)
+                ]
+                .spacing(8)
+                .height(Fill)
+                .into()
             }
         } else {
             let items: Vec<Element<'_, Message>> = self
