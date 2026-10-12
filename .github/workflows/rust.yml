@@ -50,19 +50,18 @@ jobs:
       - name: Install Linux dependencies and setup swap (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          # 1. Disable existing swap if present, then create an 8GB swapfile
+          # 1. Clear any active swap cleanly and establish a 7GB swapfile
           sudo swapoff -a || true
-          sudo rm -f /swapfile_extra
-          sudo fallocate -l 8G /swapfile_extra || sudo dd if=/dev/zero of=/swapfile_extra bs=1M count=8192
-          sudo chmod 600 /swapfile_extra
-          sudo mkswap /swapfile_extra
-          sudo swapon /swapfile_extra
+          sudo rm -f /mnt/swapfile_gh
+          sudo dd if=/dev/zero of=/mnt/swapfile_gh bs=1M count=7168 status=progress
+          sudo chmod 600 /mnt/swapfile_gh
+          sudo mkswap /mnt/swapfile_gh
+          sudo swapon /mnt/swapfile_gh
           free -h
 
           # 2. Install GUI dependencies
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libfontconfig1-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libwayland-dev pkg-config
-
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }}
 
