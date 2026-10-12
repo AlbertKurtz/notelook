@@ -47,9 +47,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install Linux dependencies (Ubuntu)
+      - name: Install Linux dependencies and setup swap (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
+          # 1. Allocate 6GB swap to prevent Linker/LLVM OOM (exit code 143)
+          sudo fallocate -l 6G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
+          # 2. Install GUI dependencies
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libfontconfig1-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libwayland-dev pkg-config
 

@@ -213,7 +213,7 @@ pub async fn search_lexical(
 
     let (mut rows, is_fallback) = match conn.query(fts_sql, (clean, limit)).await {
         Ok(r) => (r, false),
-        Err(e) => {
+        Err(_e) => {
             // Token-based fallback when Tantivy FTS is unavailable
             // Homemade receipe ;-)
             let tokens: Vec<&str> = clean.split_whitespace().filter(|t| !t.is_empty()).collect();

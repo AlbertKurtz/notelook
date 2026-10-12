@@ -35,3 +35,10 @@ debug = 1 # Line tables only (keeps backtraces/line numbers, cuts 70% of PDB siz
 # Compile external dependencies without debug symbols
 [profile.dev.package."*"]
 debug = false
+
+[profile.release]
+# A single codegen unit prevents parallel linker memory spikes
+codegen-units = 1
+# Strip debug symbols and line tables to reduce artifact footprint
+strip = true
+lto = "thin"
