@@ -50,11 +50,14 @@ jobs:
       - name: Install Linux dependencies and setup swap (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          # 1. Allocate 6GB swap to prevent Linker/LLVM OOM (exit code 143)
-          sudo fallocate -l 6G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          # 1. Disable existing swap if present, then create an 8GB swapfile
+          sudo swapoff -a || true
+          sudo rm -f /swapfile_extra
+          sudo fallocate -l 8G /swapfile_extra || sudo dd if=/dev/zero of=/swapfile_extra bs=1M count=8192
+          sudo chmod 600 /swapfile_extra
+          sudo mkswap /swapfile_extra
+          sudo swapon /swapfile_extra
+          free -h
 
           # 2. Install GUI dependencies
           sudo apt-get update
@@ -70,8 +73,10 @@ jobs:
           mkdir release
           cp target/${{ matrix.target }}/release/notelook.exe release/
           cp target/${{ matrix.target }}/release/cli.exe release/
-          cp README.md release/
-          cp LICENSE release/
+          if (Test-Path "README.md") { cp README.md release/ }
+          # Copy LICENSE regardless of whether it is named LICENSE, LICENSE.txt, or LICENSE.md
+          $license = Get-ChildItem -Path . -Filter "LICENSE*" | Select-Object -First 1
+          if ($license) { cp $license.FullName release/LICENSE }
           Compress-Archive -Path release/* -DestinationPath ${{ matrix.artifact_name }}
 
       - name: Package Unix artifacts
@@ -80,8 +85,9 @@ jobs:
           mkdir release
           cp target/${{ matrix.target }}/release/notelook release/
           cp target/${{ matrix.target }}/release/cli release/
-          cp README.md release/
-          cp LICENSE release/
+          [ -f README.md ] && cp README.md release/
+          # Copy LICENSE regardless of whether it is named LICENSE, LICENSE.txt, or LICENSE.md
+          find . -maxdepth 1 -name "LICENSE*" -exec cp {} release/LICENSE \;
           tar -czvf ${{ matrix.artifact_name }} -C release .
 
       - name: Upload Release Asset
