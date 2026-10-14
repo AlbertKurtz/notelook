@@ -1,6 +1,6 @@
 [package]
 name = "notelook"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Lightweight yet powerful notepad app"
 default-run = "notelook"
