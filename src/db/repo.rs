@@ -190,10 +190,18 @@ pub async fn unindexed_notes(conn: &Connection) -> Result<Vec<(i64, String)>> {
     Ok(results)
 }
 
-/// Lexical search using Turso native full-text search (Tantivy).
 pub async fn search_lexical(
     conn: &Connection,
     raw_query: &str,
+    limit: i64,
+) -> Result<Vec<SearchHit>> {
+    search_lexical_with_vec(conn, raw_query, None, limit).await
+}
+
+pub async fn search_lexical_with_vec(
+    conn: &Connection,
+    raw_query: &str,
+    query_vec: Option<&[f32]>,
     limit: i64,
 ) -> Result<Vec<SearchHit>> {
     let clean = raw_query.trim();
@@ -201,80 +209,95 @@ pub async fn search_lexical(
         return Ok(Vec::new());
     }
 
-    let fts_sql = "
-        SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at,
-               fts_score(c.content, ?1) AS score
-        FROM chunks c
-        JOIN notes n ON n.id = c.note_id
-        WHERE fts_match(c.content, ?1)
-        ORDER BY score DESC
-        LIMIT ?2
-    ";
+    // If a query vector is provided, compute the real cosine distance in SQL;
+    // otherwise default to 0.35 for standalone lexical tests.
+    let vec_json = query_vec
+        .map(serde_json::to_string)
+        .transpose()?;
 
-    let (mut rows, is_fallback) = match conn.query(fts_sql, (clean, limit)).await {
-        Ok(r) => (r, false),
-        Err(_e) => {
-            // Token-based fallback when Tantivy FTS is unavailable
-            // Homemade receipe ;-)
+    let dist_expr = if vec_json.is_some() {
+        "vector_distance_cos(c.embedding, vector(?3))"
+    } else {
+        "0.35"
+    };
+
+    let fts_sql = format!(
+        "SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at,
+                {dist_expr} AS distance
+         FROM chunks c
+         JOIN notes n ON n.id = c.note_id
+         WHERE fts_match(c.content, ?1)
+         ORDER BY fts_score(c.content, ?1) DESC
+         LIMIT ?2"
+    );
+
+    let fts_res = match &vec_json {
+        Some(vj) => conn.query(&fts_sql, (clean, limit, vj.as_str())).await,
+        None => conn.query(&fts_sql, (clean, limit)).await,
+    };
+
+    let mut rows = match fts_res {
+        Ok(r) => r,
+        Err(_) => {
             let tokens: Vec<&str> = clean.split_whitespace().filter(|t| !t.is_empty()).collect();
-
             if tokens.is_empty() {
                 return Ok(Vec::new());
             }
 
             let conditions: Vec<String> = (1..=tokens.len())
-                .map(|i| format!("c.content LIKE ?{i}"))
+                .map(|i| format!("c.content LIKE ?{i} ESCAPE '\\'"))
                 .collect();
             let where_clause = conditions.join(" OR ");
+            let limit_idx = tokens.len() + 1;
+            let vec_idx = tokens.len() + 2;
+
+            let fb_dist = if vec_json.is_some() {
+                format!("vector_distance_cos(c.embedding, vector(?{vec_idx}))")
+            } else {
+                "0.35".to_string()
+            };
 
             let fallback_sql = format!(
-                            "SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at, 1.0 AS score
-                             FROM chunks c
-                             JOIN notes n ON n.id = c.note_id
-                             WHERE {where_clause}
-                             ORDER BY n.updated_at DESC
-                             LIMIT ?{}",
-                            tokens.len() + 1
-                        );
+                "SELECT c.note_id, c.chunk_index, c.byte_start, c.content, n.created_at,
+                        {fb_dist} AS distance
+                 FROM chunks c
+                 JOIN notes n ON n.id = c.note_id
+                 WHERE {where_clause}
+                 ORDER BY n.updated_at DESC
+                 LIMIT ?{limit_idx}"
+            );
 
             let mut params: Vec<turso::Value> = tokens
                 .into_iter()
-                .map(|t| format!("%{t}%").into())
+                .map(|t| {
+                    let escaped = t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+                    format!("%{escaped}%").into()
+                })
                 .collect();
             params.push(limit.into());
-            match conn.query(&fallback_sql, params).await {
-                Ok(r) => (r, true),
-                Err(err) => {
-                    eprintln!("lexical fallback search error: {err:#}");
-                    return Ok(Vec::new());
-                }
+            if let Some(vj) = &vec_json {
+                params.push(vj.clone().into());
             }
+
+            conn.query(&fallback_sql, params).await?
         }
     };
 
     let mut hits = Vec::new();
     while let Some(row) = rows.next().await? {
-        let score: f64 = row.get(5)?;
-        let distance = if is_fallback {
-            0.35 // Plausible lexical baseline distance, MAGIC NUMBER
-        } else {
-            (1.0 - (score / 10.0)).clamp(0.0, 1.0)
-        };
-
         hits.push(SearchHit {
             note_id: row.get(0)?,
             chunk_index: row.get(1)?,
             byte_start: row.get(2)?,
             content: row.get(3)?,
             note_created_at: row.get(4)?,
-            distance,
+            distance: row.get::<f64>(5).unwrap_or(0.35),
             lexical_matched: true,
             rrf_score: 0.0,
         });
     }
     Ok(hits)
 }
-
 /// Clean semantic search
 pub async fn search_chunks(
     conn: &Connection,
@@ -323,7 +346,7 @@ pub async fn search_hybrid(
     let k = 60.0;
 
     let (lex_hits, sem_hits) = tokio::join!(
-        search_lexical(conn, raw_query, candidate_limit),
+        search_lexical_with_vec(conn, raw_query,Some(query_vec), candidate_limit),
         search_chunks(conn, query_vec, candidate_limit)
     );
 

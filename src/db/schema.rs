@@ -90,5 +90,11 @@ pub async fn migrate(conn: &Connection) -> Result<()> {
         finish_tx(conn, result).await?;
     }
 
+    let stored_model = get_meta(conn, "embed_model_id").await?;
+    if stored_model.as_deref() != Some(crate::config::EMBED_MODEL_ID) {
+        conn.execute("DELETE FROM chunks", ()).await?;
+        set_meta(conn, "embed_model_id", crate::config::EMBED_MODEL_ID).await?;
+    }
+
     Ok(())
 }

@@ -32,9 +32,19 @@ async fn main() -> Result<()> {
                 .context("usage: cli search \"<query>\" [limit]")?;
             let limit: i64 = args.get(2).and_then(|s| s.parse::<i64>().ok()).unwrap_or(5);
 
-            let embedder = Embedder::try_new()?;
+            let embedder = std::sync::Arc::new(Embedder::try_new()?);
+            let chunker = std::sync::Arc::new(
+                embedder.chunker(config::CHUNK_MAX_TOKENS, config::CHUNK_OVERLAP)?,
+            );
+            notelook::worker::index_unindexed_notes(
+                db.clone(),
+                std::sync::Arc::clone(&embedder),
+                chunker,
+            )
+                .await?;
+
             let query_vec = embedder.compute(query)?;
-            let hits = db.search_hybrid(&query, &query_vec, limit).await?;
+            let hits = db.search_hybrid(query, &query_vec, limit).await?;
 
             println!("Query: {query:?}\n");
             for hit in hits {
