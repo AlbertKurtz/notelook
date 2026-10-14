@@ -16,7 +16,7 @@
     <img src="assets/logo.png" alt="NoteLook Logo">
   </a>
 
-<h1 align="center">NoteLook</h3>
+<h1 align="center">NoteLook</h1>
 
   <p align="center">
     A lightweight, portable note-taking app with semantic memory and hybrid search.
@@ -129,7 +129,7 @@ Download Pre-built Binaries at [Release](https://github.com/AlbertKurtz/notelook
   curl --proto '=https' --tlsv1.2 -sSf [https://sh.rustup.rs](https://sh.rustup.rs) | sh
   ```
 * **Git**: To clone the repository.
-* *Note*: On the first run, NoteLook downloads the `all-MiniLM-L6-v2` model weights (~90MB) from Hugging Face into your local cache directory. Subsequent runs operate completely offline.
+* *Note*: On the first run, NoteLook downloads the `paraphrase-multilingual-MiniLM-L12-v2` model weights (~90MB) from Hugging Face into your local cache directory. Subsequent runs operate completely offline.
 
 #### Installation
 
@@ -284,7 +284,7 @@ Distributed under the MIT License. See `LICENSE` for more information.
 * [Iced](https://github.com/iced-rs/iced) for the cross-platform GUI architecture
 * [Turso / libSQL](https://github.com/tursodatabase/libsql) for SQLite with native vector support
 * [text-splitter](https://github.com/benbrandt/text-splitter) for tokenizer-accurate chunk boundaries
-* [sentence-transformers](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) for the `all-MiniLM-L6-v2` embedding model
+* [sentence-transformers](https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2) for the `paraphrase-multilingual-MiniLM-L12-v2` embedding model
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
