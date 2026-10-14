@@ -6,12 +6,15 @@ pub use models::*;
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use turso::{Builder, Connection};
 
 /// Ergonomic database handle. Cheap to clone and share across async tasks.
 #[derive(Debug, Clone)]
 pub struct Db {
     conn: Connection,
+    tx_lock : Arc<Mutex<()>>
 }
 
 impl Db {
@@ -27,8 +30,13 @@ impl Db {
         let conn = db.connect()?;
 
         conn.execute("PRAGMA foreign_keys = ON", ()).await?;
+        let _ = conn.execute("PRAGMA journal_mode = WAL", ()).await;
+        let _ = conn.execute("PRAGMA busy_timeout = 5000", ()).await;
         schema::migrate(&conn).await?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            tx_lock: Arc::new(Mutex::new(())),
+        })
     }
 
     /// Access the underlying connection if needed.
@@ -78,6 +86,7 @@ impl Db {
     }
 
     pub async fn save_chunks(&self, note_id: i64, chunks: &[ChunkRow]) -> Result<()> {
+        let _guard = self.tx_lock.lock().await;
         repo::save_chunks(&self.conn, note_id, chunks).await
     }
 
