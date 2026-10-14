@@ -88,6 +88,20 @@ impl App {
     fn can_save(&self) -> bool {
         self.db.is_some() && !self.saving && self.is_dirty()
     }
+
+    fn sort_search_results(&mut self) {
+        match self.search_sort {
+            SearchSort::Similarity => self.search_results.sort_by(|a, b| {
+                b.similarity_percent().total_cmp(&a.similarity_percent())
+            }),
+            SearchSort::RrfRank => self
+                .search_results
+                .sort_by(|a, b| b.rrf_score.total_cmp(&a.rrf_score)),
+            SearchSort::Date => self
+                .search_results
+                .sort_by(|a, b| b.note_created_at.cmp(&a.note_created_at)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +436,7 @@ impl App {
             Message::SearchResultsLoaded(Ok(results)) => {
                 self.status = format!("Found {} semantic matches", results.len());
                 self.search_results = results;
+                self.sort_search_results();
                 Task::none()
             }
             Message::SearchResultsLoaded(Err(e)) => {
@@ -430,6 +445,7 @@ impl App {
             }
             Message::SetSearchSort(sort) => {
                 self.search_sort = sort;
+                self.sort_search_results();
                 Task::none()
             }
             Message::ClearSearch => {
@@ -511,33 +527,17 @@ impl App {
                 .align_y(Alignment::Center)
                 .spacing(4);
 
-                // 2. Clone and sort hits based on the current selection
-                let mut sorted_hits = self.search_results.clone();
-                match self.search_sort {
-                    SearchSort::Similarity => {
-                        sorted_hits.sort_by(|a, b| {
-                            b.similarity_percent()
-                                .partial_cmp(&a.similarity_percent())
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                    }
-                    SearchSort::RrfRank => {
-                        sorted_hits.sort_by(|a, b| {
-                            b.rrf_score
-                                .partial_cmp(&a.rrf_score)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                    }
-                    SearchSort::Date => {
-                        sorted_hits.sort_by(|a, b| b.note_created_at.cmp(&a.note_created_at));
-                    }
-                }
-
-                // 3. Render items
-                let items: Vec<Element<'_, Message>> = sorted_hits
+                // 2. Render items directly from pre-sorted self.search_results
+                let items: Vec<Element<'_, Message>> = self
+                    .search_results
                     .iter()
                     .map(|hit| {
-                        let preview: String = hit.content.chars().take(80).collect();
+                        let preview: String = hit
+                            .content
+                            .chars()
+                            .map(|c| if c.is_control() { ' ' } else { c })
+                            .take(80)
+                            .collect();
                         let sim_badge = format!("{:.0}%", hit.similarity_percent());
                         let lex_indicator = if hit.lexical_matched { " [text]" } else { "" };
 
@@ -550,12 +550,12 @@ impl App {
                                 ],
                                 text(preview).size(12),
                             ]
-                            .spacing(4),
+                                .spacing(4),
                         )
-                        .on_press(Message::SelectNote(hit.note_id))
-                        .width(Fill)
-                        .padding(8)
-                        .into()
+                            .on_press(Message::SelectNote(hit.note_id))
+                            .width(Fill)
+                            .padding(8)
+                            .into()
                     })
                     .collect();
 
@@ -563,9 +563,9 @@ impl App {
                     sort_controls,
                     scrollable(column(items).spacing(6)).height(Fill)
                 ]
-                .spacing(8)
-                .height(Fill)
-                .into()
+                    .spacing(8)
+                    .height(Fill)
+                    .into()
             }
         } else {
             let items: Vec<Element<'_, Message>> = self
