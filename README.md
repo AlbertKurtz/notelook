@@ -171,6 +171,7 @@ or the executable.
 | :--- | :--- |
 | <kbd>Ctrl</kbd> + <kbd>S</kbd> | Save note and trigger background re-indexing |
 | <kbd>Ctrl</kbd> + <kbd>N</kbd> | Create a new note |
+| <kbd>Ctrl</kbd> + <kbd>E</kbd> | Export a note to .txt or .md |
 | <kbd>Ctrl</kbd> + <kbd>Q</kbd> | Quit application |
 
 ### CLI Tool
