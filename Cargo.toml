@@ -1,6 +1,6 @@
 [package]
 name = "notelook"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Lightweight yet powerful notepad app"
 default-run = "notelook"
@@ -14,14 +14,15 @@ candle-core = "0.11.0"
 candle-nn = "0.11.0"
 candle-transformers = "0.11.0"
 directories = "6.0.0"
-hf-hub = { version = "0.4", features = ["tokio"] }
 iced = { version = "0.14.0", features = ["tokio"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.17.2"
+
 serde_json = "1.0.151"
 text-splitter = { version = "0.33", features = ["tokenizers", "markdown"] }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 
-tokio = { version = "1.53.1", features = ["full", "macros", "rt-multi-thread"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync"] }
 turso = "0.8.1"
 
 [build-dependencies]
@@ -30,7 +31,8 @@ hf-hub = "0.4"
 
 # Reduce debug symbol size for faster builds and much smaller disk usage
 [profile.dev]
-debug = 1 # Line tables only (keeps backtraces/line numbers, cuts 70% of PDB size)
+debug = 1
+incremental = false
 
 # Compile external dependencies without debug symbols
 [profile.dev.package."*"]

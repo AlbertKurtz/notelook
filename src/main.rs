@@ -5,6 +5,8 @@ use iced::widget::{
 use iced::{
     Alignment, Border, Color, Element, Fill, Length, Padding, Size, Task, Theme, keyboard, window,
 };
+
+use rfd::FileDialog;
 use std::sync::Arc;
 
 use notelook::chunk::Chunker;
@@ -15,7 +17,7 @@ use notelook::worker;
 
 pub fn main() -> iced::Result {
     iced::application(App::boot, App::update, App::view)
-        .title("Notelook")
+        .title("NoteLook")
         .theme(theme)
         .window(window::Settings {
             size: Size::new(1050.0, 680.0),
@@ -117,6 +119,8 @@ enum Message {
     NoteSaved(Result<(i64, bool, String), String>),
     DeleteNote,
     NoteDeleted(Result<(), String>),
+    ExportNote,
+    NoteExported(Result<Option<std::path::PathBuf>, String>),
     SearchInputChanged(String),
     PerformSearch,
     SearchResultsLoaded(Result<Vec<SearchHit>, String>),
@@ -392,6 +396,50 @@ impl App {
                 Task::none()
             }
 
+            Message::ExportNote=>{
+                let text = self.content.text();
+                if text.trim().is_empty() {
+                    self.status = String::from("Cannot export an empty note");
+                    return Task::none();
+                }
+
+                let default_name = match self.current_note_id{
+                    Some(id) => format!("Note_{id}.txt"),
+                    None => String::from("note.txt"),
+                };
+
+                self.status = String::from("Exporting note...");
+
+                Task::perform(
+                    async move{
+                        tokio::task::spawn_blocking(move || -> anyhow::Result<Option<std::path::PathBuf>>{
+                            let file_path = FileDialog::new().set_file_name(&default_name).add_filter("Text File", &["txt"]).add_filter("Markdown File", &["md"]).save_file();
+                            if let Some(ref path) = file_path{
+                                std::fs::write(path, text)?;
+                            }
+                            Ok(file_path)
+                        }).await?
+                    },
+                    move |result| Message::NoteExported(result.map_err(|e| format!("{e:#}"))),
+                )
+            }
+
+            Message::NoteExported(Ok(Some(path))) => {
+                let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+                self.status = format!("Exported note to {file_name}");
+                Task::none()
+            }
+
+            Message::NoteExported(Ok(None)) => {
+                self.status = String::from("Export cancelled");
+                Task::none()
+            }
+
+            Message::NoteExported(Err(e)) => {
+                self.status = format!("Export failed: {e}");
+                Task::none()
+            }
+
             Message::SearchInputChanged(query) => {
                 self.search_query = query;
                 if self.search_query.trim().is_empty() {
@@ -627,9 +675,14 @@ impl App {
             None => format!("{dirty_mark}New Note (Unsaved)"),
         };
 
+        let has_content = !self.content.text().trim().is_empty();
+
         let action_bar = row![
             text(note_header).size(16),
             space::horizontal(),
+            button("Export (Ctrl+E)")
+                .on_press_maybe(has_content.then_some(Message::ExportNote))
+                .padding([6, 12]),
             button("Save (Ctrl+S)")
                 .on_press_maybe(self.can_save().then_some(Message::SaveNote))
                 .padding([6, 12]),
@@ -679,6 +732,7 @@ fn editor_bindings(key_press: text_editor::KeyPress) -> Option<text_editor::Bind
 
     if key_press.modifiers.command() {
         let message = match key_press.key.as_ref() {
+            Key::Character("e") => Some(Message::ExportNote),
             Key::Character("s") => Some(Message::SaveNote),
             Key::Character("n") => Some(Message::NewNote),
             Key::Character("q") => Some(Message::Quit),

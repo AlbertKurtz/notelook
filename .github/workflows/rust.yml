@@ -61,7 +61,7 @@ jobs:
 
           # 2. Install GUI dependencies
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libfontconfig1-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libwayland-dev pkg-config
+          sudo apt-get install -y libasound2-dev libfontconfig1-dev libx11-dev libx11-xcb-dev libxkbcommon-x11-dev libwayland-dev libgtk-3-dev pkg-config
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }}
 

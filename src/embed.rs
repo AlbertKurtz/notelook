@@ -2,6 +2,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config};
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 use tokenizers::{PaddingParams, Tokenizer, TruncationParams};
@@ -15,6 +16,7 @@ pub struct Embedder {
     tokenizer: Arc<Tokenizer>,
     device: Device,
 }
+
 impl fmt::Debug for Embedder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Embedder")
@@ -25,7 +27,26 @@ impl fmt::Debug for Embedder {
 
 const CONFIG_BYTES: &[u8] = include_bytes!("../assets/model/config.json");
 const TOKENIZER_BYTES: &[u8] = include_bytes!("../assets/model/tokenizer.json");
-const WEIGHTS_BYTES: &[u8] = include_bytes!("../assets/model/model.safetensors");
+
+#[cfg(not(debug_assertions))]
+const RELEASE_WEIGHTS_BYTES: &[u8] = include_bytes!("../assets/model/model.safetensors");
+
+fn load_model_weights() -> Result<Cow<'static, [u8]>> {
+    #[cfg(debug_assertions)]
+    {
+        // In debug mode, read weights dynamically from the filesystem to avoid
+        // baking 470MB into AST/PDB/LLVM object caches on every compilation.
+        let bytes = std::fs::read("assets/model/model.safetensors")
+            .context("failed to read 'assets/model/model.safetensors' from disk in debug mode")?;
+        Ok(Cow::Owned(bytes))
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        // In release mode, bundle directly into the binary for standalone distribution.
+        Ok(Cow::Borrowed(RELEASE_WEIGHTS_BYTES))
+    }
+}
 
 impl Embedder {
     pub fn try_new() -> Result<Self> {
@@ -46,7 +67,8 @@ impl Embedder {
             }))
             .map_err(|e| anyhow!("{e}"))?;
 
-        let vb = VarBuilder::from_slice_safetensors(WEIGHTS_BYTES, DType::F32, &device)?;
+        let weights = load_model_weights()?;
+        let vb = VarBuilder::from_slice_safetensors(&weights, DType::F32, &device)?;
         let model = BertModel::load(vb, &config)?;
 
         let embedder = Self {
@@ -132,6 +154,7 @@ impl Embedder {
 
         Ok(normalized.to_vec2::<f32>()?)
     }
+
     pub fn tokenizer(&self) -> tokenizers::Tokenizer {
         (*self.tokenizer).clone()
     }
